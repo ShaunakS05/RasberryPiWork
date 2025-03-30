@@ -261,7 +261,7 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
 
             # --- Send result to GUI ---
             # GUI still gets sent only for TRASH/RECYCLING classifications
-            if classification_result in ["TRASH", "RECYCLING"]:
+            if classification_result in ["TRASH", "RECYCLING"] and item_name_result != "CARDBOARD BOX" :
                 detection_data = {
                     "type": classification_result,
                     "name": item_name_result
