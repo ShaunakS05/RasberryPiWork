@@ -88,8 +88,6 @@ def ask_chatgpt(image_path):
     global client
     if not client:
         print("OpenAI client not available. Skipping analysis.")
-        # Return mock data or None depending on how you want to handle this
-        # return "RECYCLING", "NO", 0, 0.0, "MOCK BOTTLE" # Example mock data
         return None
 
     print(f"→ Analyzing image based on detected change: {image_path}")
@@ -99,7 +97,9 @@ def ask_chatgpt(image_path):
             return None # Error during encoding
 
         response = client.chat.completions.create(
-            model="gpt-4-vision-preview", # Use recommended vision model
+            # --- FIX: Update the model name here ---
+            model="gpt-4-turbo",
+            # ---------------------------------------
             messages=[
                 {
                     "role": "user",
@@ -142,7 +142,7 @@ def ask_chatgpt(image_path):
             max_tokens=100,
         )
         response_text = response.choices[0].message.content.strip()
-        print("--- GPT-4V Raw Response ---")
+        print("--- GPT-4 Turbo Raw Response ---") # Updated print message
         print(response_text)
         print("--------------------------")
 
@@ -171,8 +171,15 @@ def ask_chatgpt(image_path):
 
 
         if classification == "IGNORE":
-            print("→ GPT-4V determined the object/change should be ignored.")
+            print("→ GPT-4 Turbo determined the object/change should be ignored.")
             return None
+
+        # Validate classification before returning
+        if classification not in ["RECYCLING", "TRASH"]:
+             print(f"Warning: Received unexpected classification '{classification}'. Treating as UNKNOWN.")
+             # Decide how to handle - return None or maybe default to TRASH? Let's return None for now.
+             return None
+
 
         print("→ Final Classification:", classification)
         print("→ Smelly object?", is_smelly)
@@ -180,12 +187,11 @@ def ask_chatgpt(image_path):
         print("→ Estimated volume (cm^3):", volume_guess)
         print("→ Item:", item_name)
 
-        # Smell commentary (optional)
-        # ...
-
         return classification, is_smelly, smell_rating, volume_guess, item_name
 
     except Exception as e:
+        # Catch potential API errors specifically if possible
+        # Example: from openai import APIError, RateLimitError etc.
         print(f"An error occurred during OpenAI request or processing: {e}")
         return None
 
