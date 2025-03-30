@@ -10,6 +10,8 @@ import queue
 import socket
 import json
 
+
+
 pygame.init()
 
 # --- Get Screen Info and Set Fullscreen Mode --- (Keep the same as before)
