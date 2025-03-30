@@ -5,30 +5,8 @@ import math
 import time
 import threading
 import queue
-import cv2
-import numpy as np
-import base64
-import os
-import serial
-from openai import OpenAI
-from dotenv import load_dotenv
-
-# --- Environment and API Configuration ---
-load_dotenv()
-try:
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-except:
-    print("Warning: OpenAI API key not found. Vision analysis will be simulated.")
-
-# --- Arduino Configuration ---
-ARDUINO_PORT = "/dev/ttyACM0"  # Change to your Arduino's port
-BAUD_RATE = 9600
-
-# --- Camera and Analysis Configuration ---
-analysis_delay = 1.5  # Seconds the change must persist
-process_every_n_frames = 3  # How often to check for change
-cooldown_period = 5  # Seconds after analysis before next trigger
-min_contour_area = 500  # Minimum pixel area for change detection
+# --- Removed OpenCV, numpy, base64, os, serial, OpenAI ---
+# These belong in the separate detection script
 
 # --- Pygame Initialization ---
 pygame.init()
@@ -63,355 +41,48 @@ font_small = pygame.font.SysFont("Arial", 18)
 font_tiny = pygame.font.SysFont("Arial", 16)
 
 # --- Global Variables for Communication Between Threads ---
-detection_queue = queue.Queue()  # For passing detection results to GUI
-camera_active = True  # Flag to control camera thread
-ser = None  # Serial connection object
+detection_queue = queue.Queue()  # For receiving detection results from the *external* camera process
+# --- Removed camera_active and ser ---
 
-# --- Camera Thread Functions ---
-
-# Initialize background subtractor
-backSub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=30, detectShadows=True)
-
-# Function to encode image for OpenAI API
-def encode_image(image_path):
-    with open(image_path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
-
-# Function to analyze image with GPT-4
-def ask_chatgpt(image_path):
-    print(f"→ Analyzing image based on detected change: {image_path}")
-    try:
-        imageDecoded = encode_image(image_path)
-        response = client.chat.completions.create(
-            model="gpt-4-turbo",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "You are a trashcan vision assistant.\n"
-                                "Look at this image, which was captured because motion or change was detected.\n"
-                                "Determine if the primary changing object is a common piece of trash or recycling.\n"
-                                "If it is NOT trash/recycling (e.g., a person, hand entering/leaving, significant lighting change, empty view after object removed), respond ONLY with:\n"
-                                "Classification: IGNORE\n"
-                                "Smelly: NO\n"
-                                "Smell Rating: 0\n"
-                                "Volume Estimation: 0 cm^3\n"
-                                "Item Name: IGNORE\n\n"
-                                "If it IS a piece of trash/recycling:\n"
-                                "1. Classify it as RECYCLING or TRASH.\n"
-                                "2. Determine if it is typically smelly. Respond with YES or NO.\n"
-                                "3. Rate how smelly it is likely to be on a scale of 1 to 10.\n"
-                                "4. Estimate the volume of the object in cm cubed by identifying the object and finding the average volume of that kind of object. Respond with <number> cm^3.\n"
-                                "5. Determine what the item is. Respond with the item name in ALL CAPS.\n\n"
-                                "Respond in the following format EXACTLY:\n"
-                                "Classification: <RECYCLING or TRASH or IGNORE>\n"
-                                "Smelly: <YES or NO>\n"
-                                "Smell Rating: <0 to 10>\n"
-                                "Volume Estimation: <number> cm^3\n"
-                                "Item Name: <ITEM NAME or IGNORE>"
-                            )
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64, {imageDecoded}"
-                            }
-                        }
-                    ]
-                }
-            ],
-            max_tokens=100,
-        )
-        response_text = response.choices[0].message.content.strip()
-        print("--- GPT-4V Raw Response ---")
-        print(response_text)
-        print("--------------------------")
-       
-        lines = response_text.splitlines()
-        classification, is_smelly, smell_rating, volume_guess, item_name = "UNKNOWN", "UNKNOWN", -1, -1.0, "UNKNOWN"
-       
-        for line in lines:
-            line_lower = line.lower()
-            if line_lower.startswith("classification:"):
-                classification = line.split(":", 1)[1].strip().upper()
-            elif line_lower.startswith("smelly:"):
-                is_smelly = line.split(":", 1)[1].strip().upper()
-            elif line_lower.startswith("smell rating:"):
-                try:
-                    smell_rating = int(line.split(":", 1)[1].strip())
-                except ValueError:
-                    smell_rating = -1
-            elif line_lower.startswith("volume estimation:"):
-                try:
-                    volume_str = line.split(":", 1)[1].strip().split()[0]
-                    volume_guess = float(volume_str.replace(',', ''))
-                except (ValueError, IndexError):
-                    volume_guess = -1.0
-            elif line_lower.startswith("item name:"):
-                item_name = line.split(":", 1)[1].strip().upper()
-
-        if classification == "IGNORE":
-            print("→ GPT-4V determined the object/change should be ignored.")
-            return None
-       
-        print("→ Final Classification:", classification)
-        print("→ Smelly object?", is_smelly)
-        print("→ Smell rating:", smell_rating)
-        print("→ Estimated volume (cm^3):", volume_guess)
-        print("→ Item:", item_name)
-       
-        return classification, is_smelly, smell_rating, volume_guess, item_name
-    except Exception as e:
-        print(f"An error occurred during OpenAI request or processing: {e}")
-        return None
-
-# Function to initialize serial connection
-def initialize_serial():
-    global ser
-    try:
-        print(f"Attempting to connect to Arduino on {ARDUINO_PORT} at {BAUD_RATE} baud...")
-        ser = serial.Serial(ARDUINO_PORT, BAUD_RATE, timeout=1)
-        time.sleep(2)  # Wait for Arduino reset
-        if ser.is_open:
-            print("Arduino connected successfully.")
-            return True
-        else:
-            print("Failed to open serial port.")
-            ser = None
-            return False
-    except serial.SerialException as e:
-        print(f"Error connecting to Arduino: {e}")
-        ser = None
-        return False
-    except Exception as e:
-        print(f"An unexpected error occurred during serial initialization: {e}")
-        ser = None
-        return False
-
-# Function to process captured frame
-def process_capture(frame_to_process, image_path="item_capture.jpg"):
-    global ser
-   
-    print(f"Change detected for >{analysis_delay}s. Processing captured frame...")
-    classification_result = None
-   
-    try:
-        save_path = image_path
-        cv2.imwrite(save_path, frame_to_process)
-        print(f"Image captured and saved to {save_path}")
-       
-        # Call OpenAI for analysis
-        result = ask_chatgpt(save_path)
-       
-        if result:
-            classification, is_smelly, smell_rating, volume_guess, item_name = result
-            classification_result = classification
-           
-            # Send result to the GUI thread
-            detection_queue.put({
-                "type": classification_result,
-                "name": item_name,
-                "smelly": is_smelly,
-                "smell_rating": smell_rating,
-                "volume": volume_guess
-            })
-        else:
-            print("Analysis resulted in IGNORE or an error. No command sent to Arduino.")
-    except Exception as e:
-        print(f"Error during frame processing or OpenAI analysis step: {e}")
-    finally:
-        if classification_result in ["TRASH", "RECYCLING"]:
-            # Send command to Arduino
-            command = 'T\n' if classification_result == "TRASH" else 'R\n'
-            if ser and ser.is_open:
-                try:
-                    print(f"Sending command '{command.strip()}' to Arduino...")
-                    ser.write(command.encode('utf-8'))
-                    print("Command sent.")
-                except serial.SerialException as e:
-                    print(f"Error writing to Arduino: {e}")
-                except Exception as e:
-                    print(f"Unexpected error during serial write: {e}")
-            else:
-                print("Cannot send command: Arduino serial port not available.")
-
-# Camera detection thread function
-def camera_detection_thread():
-    global camera_active, backSub
-   
-    is_processing = False
-    last_trigger_time = 0
-    change_first_seen_time = 0.0
-   
-    cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
-    if not cap.isOpened():
-        print("Cannot open camera")
-        return
-   
-    # Set camera properties
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    time.sleep(0.5)
-   
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-   
-    if h == 0 or w == 0:
-        print(f"Error: Could not get valid frame dimensions ({w}x{h}) from camera.")
-        cap.release()
-        return
-   
-    print(f"Camera resolution set to {w}x{h}")
-   
-    # Initialize background model
-    print("Camera opened. Allowing time for background learning...")
-    initial_bg_frames = 30
-    for i in range(initial_bg_frames):
-        ret, frame = cap.read()
-        if ret:
-            _ = backSub.apply(frame)
-        else:
-            print(f"Warning: Failed to grab frame {i+1}/{initial_bg_frames} during background learning.")
-        time.sleep(0.05)
-   
-    print(f"Starting monitoring. Will analyze significant changes present for >{analysis_delay}s...")
-   
-    frame_counter = 0
-    last_contour_boxes = []
-    current_frame = None
-   
-    try:
-        while camera_active:
-            ret, frame = cap.read()
-            if not ret:
-                print("Failed to grab frame")
-                time.sleep(0.1)
-                continue
-           
-            current_frame = frame.copy()
-            display_frame = frame
-            now = time.time()
-           
-            frame_counter += 1
-            significant_change_detected_in_last_processed_frame = False
-           
-            if frame_counter % process_every_n_frames == 0:
-                # Apply background subtraction
-                fgMask = backSub.apply(current_frame)
-                _, fgMask = cv2.threshold(fgMask, 200, 255, cv2.THRESH_BINARY)
-               
-                # Clean up mask
-                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                fgMask_cleaned = cv2.morphologyEx(fgMask, cv2.MORPH_OPEN, kernel, iterations=2)
-                fgMask_cleaned = cv2.morphologyEx(fgMask_cleaned, cv2.MORPH_CLOSE, kernel, iterations=3)
-               
-                # Find contours
-                contours, _ = cv2.findContours(fgMask_cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                significant_change_detected = False
-                current_contour_boxes = []
-               
-                for cnt in contours:
-                    area = cv2.contourArea(cnt)
-                    if area > min_contour_area:
-                        significant_change_detected = True
-                        x, y, cw, ch = cv2.boundingRect(cnt)
-                        current_contour_boxes.append((x, y, x+cw, y+ch))
-               
-                last_contour_boxes = current_contour_boxes
-                significant_change_detected_in_last_processed_frame = significant_change_detected
-               
-                # Trigger logic
-                if significant_change_detected_in_last_processed_frame:
-                    if change_first_seen_time == 0.0:
-                        print(f"Significant change detected. Starting {analysis_delay}s timer...")
-                        change_first_seen_time = now
-                    else:
-                        elapsed_time = now - change_first_seen_time
-                        if elapsed_time >= analysis_delay:
-                            if not is_processing and (now - last_trigger_time > cooldown_period):
-                                print(f"--- Change detected for >{analysis_delay}s. Triggering Analysis ---")
-                                is_processing = True
-                                change_first_seen_time = 0.0
-                                last_trigger_time = now
-                                frame_to_analyze = current_frame
-                               
-                                # Start analysis in a separate thread
-                                threading.Thread(
-                                    target=process_capture,
-                                    args=(frame_to_analyze, "item_capture.jpg"),
-                                    daemon=True
-                                ).start()
-                else:
-                    # No significant change detected
-                    if change_first_seen_time != 0.0:
-                        print("Change disappeared before analysis delay.")
-                        change_first_seen_time = 0.0
-           
-            # Display processing status in separate window if needed
-            try:
-                # Draw contour boxes on display frame
-                if significant_change_detected_in_last_processed_frame:
-                    for (x1, y1, x2, y2) in last_contour_boxes:
-                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 255), 2)  # Yellow box
-               
-                status = "Processing..." if is_processing else "Monitoring"
-                cv2.putText(display_frame, f"Status: {status}", (10, h - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-               
-                cv2.imshow("Camera Feed", display_frame)
-                cv2.waitKey(1)
-            except Exception as e:
-                print(f"Error displaying camera feed: {e}")
-           
-            # Check if processing is complete
-            if is_processing and (now - last_trigger_time > 5.0):  # Add timeout
-                is_processing = False
-           
-            time.sleep(0.01)  # Small delay to prevent CPU hogging
-   
-    except Exception as e:
-        print(f"Error in camera thread: {e}")
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
-        print("Camera thread shut down.")
+# --- Removed Camera Thread Functions ---
+# (encode_image, ask_chatgpt, initialize_serial, process_capture, camera_detection_thread, backSub)
+# These functions belong in your separate detection script (raspberry_pi.py)
 
 # --- Pygame GUI Classes ---
 
-# Smart bin statistics
+# Smart bin statistics (Unchanged)
 class BinStats:
     def __init__(self):
         self.recycled_items = 0
         self.landfill_items = 0
         self.total_items = 0
+        # CO2/Water saving logic might need refinement or actual data sources
         self.co2_saved = 0
         self.water_saved = 0
         self.last_updated = time.time()
-       
+
     def update_stats(self, bin_type):
         self.total_items += 1
         if bin_type.upper() == "RECYCLING":
             self.recycled_items += 1
-            self.co2_saved += random.uniform(0.2, 0.5)
-            self.water_saved += random.uniform(1, 3)
+            # Use more realistic or configurable values
+            self.co2_saved += random.uniform(0.1, 0.3) # Example: kg CO2 per item
+            self.water_saved += random.uniform(0.5, 2.0) # Example: Liters water per item
         elif bin_type.upper() == "TRASH":
             self.landfill_items += 1
         self.last_updated = time.time()
-       
+
     def get_recycling_percentage(self):
         if self.total_items == 0:
             return 0
         return (self.recycled_items / self.total_items) * 100
 
-# Nature-inspired animated elements (leaves, water drops)
+# Nature-inspired animated elements (leaves, water drops) (Unchanged, mostly graphical)
 class NatureElement:
     def __init__(self):
         self.reset()
         self.y = random.randint(0, SCREEN_HEIGHT)
-       
+
     def reset(self):
         self.x = random.randint(0, SCREEN_WIDTH)
         self.y = -10
@@ -421,7 +92,7 @@ class NatureElement:
         self.drift = random.uniform(-0.3, 0.3)
         self.rotation = random.randint(0, 360)
         self.rot_speed = random.uniform(-1, 1)
-       
+
         # Color based on element type
         if self.type == "leaf":
             green_variation = random.randint(-20, 20)
@@ -432,43 +103,32 @@ class NatureElement:
             self.color = (r, g, b)
         else:  # water drop
             self.color = WATER_BLUE
-       
+
     def update(self):
         self.y += self.speed
         self.x += self.drift
         self.rotation += self.rot_speed
-       
-        if self.y > SCREEN_HEIGHT or self.x < -20 or self.x > SCREEN_WIDTH + 20:
+
+        if self.y > SCREEN_HEIGHT + 20 or self.x < -20 or self.x > SCREEN_WIDTH + 20:
             self.reset()
-           
+
     def draw(self, surface):
         try:
             if self.type == "leaf":
-                # Create a leaf shape
                 leaf_surf = pygame.Surface((self.size * 4, self.size * 3), pygame.SRCALPHA)
-               
-                # Draw leaf shape - simplified oval with stem
-                leaf_color = (*self.color, 180)  # Semi-transparent
-                stem_color = (SOFT_BROWN[0], SOFT_BROWN[1], SOFT_BROWN[2], 180)
-               
-                # Leaf body
+                leaf_color = (*self.color, 180)
+                stem_color = (*SOFT_BROWN[:3], 180)
                 pygame.draw.ellipse(leaf_surf, leaf_color, (0, 0, self.size * 3, self.size * 2))
-               
-                # Leaf stem
                 pygame.draw.line(leaf_surf, stem_color,
                               (self.size * 1.5, self.size * 1),
-                              (self.size * 3, self.size * 2), 2)
-               
-                # Rotate leaf
+                              (self.size * 3, self.size * 2), max(1, self.size // 3)) # Adjusted thickness
                 rotated_leaf = pygame.transform.rotate(leaf_surf, self.rotation)
                 leaf_rect = rotated_leaf.get_rect(center=(int(self.x), int(self.y)))
                 surface.blit(rotated_leaf, leaf_rect)
-               
+
             else:  # water drop
                 drop_surf = pygame.Surface((self.size * 2, self.size * 3), pygame.SRCALPHA)
-                drop_color = (WATER_BLUE[0], WATER_BLUE[1], WATER_BLUE[2], 150)
-               
-                # Draw teardrop shape
+                drop_color = (*WATER_BLUE[:3], 150)
                 pygame.draw.circle(drop_surf, drop_color, (self.size, self.size), self.size)
                 points = [
                     (self.size - self.size/2, self.size),
@@ -476,22 +136,18 @@ class NatureElement:
                     (self.size, self.size * 2.5)
                 ]
                 pygame.draw.polygon(drop_surf, drop_color, points)
-               
-                # Add highlight
                 highlight_pos = (int(self.size * 0.7), int(self.size * 0.7))
                 highlight_radius = max(1, int(self.size / 3))
-                highlight_color = (LIGHT_BLUE[0], LIGHT_BLUE[1], LIGHT_BLUE[2], 180)
+                highlight_color = (*LIGHT_BLUE[:3], 180)
                 pygame.draw.circle(drop_surf, highlight_color, highlight_pos, highlight_radius)
-               
-                # Rotate slightly
-                rotated_drop = pygame.transform.rotate(drop_surf, self.rotation / 10)  # Subtle rotation
+                rotated_drop = pygame.transform.rotate(drop_surf, self.rotation / 10)
                 drop_rect = rotated_drop.get_rect(center=(int(self.x), int(self.y)))
                 surface.blit(rotated_drop, drop_rect)
-        except (pygame.error, TypeError) as e:
-            # If rendering fails, just reset this element
+        except (pygame.error, TypeError, ValueError) as e:
+            print(f"Warning: Error drawing nature element: {e}")
             self.reset()
 
-# Natural-looking progress bar (like a growing plant or filling water level)
+# Natural-looking progress bar (Unchanged, graphical)
 class NaturalProgressBar:
     def __init__(self, x, y, width, height, color, bg_color, max_value=100, style="plant"):
         self.x = x
@@ -503,139 +159,158 @@ class NaturalProgressBar:
         self.max_value = max_value
         self.current_value = 0
         self.target_value = 0
-        self.animation_speed = 2
-        self.style = style  # "plant" or "water"
-       
-        # Elements for plant style progress
+        self.animation_speed = 2 # Speed of bar filling/emptying
+        self.style = style
+
         if self.style == "plant":
             self.vine_points = []
             self.leaf_positions = []
             self.generate_vine_path()
-       
+
     def generate_vine_path(self):
-        # Create a natural-looking vine path
         self.vine_points = []
-        segment_height = self.height / 10
-       
-        for i in range(11):  # 11 points to create 10 segments
+        segment_height = self.height / 10.0 # Use float division
+
+        if segment_height <= 0: return # Avoid division by zero if height is too small
+
+        for i in range(11):
             y_pos = self.y + self.height - (i * segment_height)
             wiggle = random.uniform(-self.width/6, self.width/6) if i > 0 else 0
             x_pos = self.x + self.width/2 + wiggle
             self.vine_points.append((x_pos, y_pos))
-           
-            # Add leaf positions at certain intervals
+
             if i > 0 and i % 2 == 0:
-                leaf_side = 1 if i % 4 == 0 else -1  # Alternate sides
+                leaf_side = 1 if i % 4 == 0 else -1
                 self.leaf_positions.append((i, leaf_side))
-       
+
     def set_value(self, value):
-        self.target_value = min(value, self.max_value)
-       
+        self.target_value = max(0, min(value, self.max_value)) # Clamp value
+
     def update(self):
-        if self.current_value < self.target_value:
-            self.current_value = min(self.target_value, self.current_value + self.animation_speed)
+        if abs(self.current_value - self.target_value) < self.animation_speed:
+            self.current_value = self.target_value
+        elif self.current_value < self.target_value:
+            self.current_value += self.animation_speed
         elif self.current_value > self.target_value:
-            self.current_value = max(self.target_value, self.current_value - self.animation_speed)
-           
+            self.current_value -= self.animation_speed
+
     def draw(self, surface):
         try:
-            # Draw background
-            pygame.draw.rect(surface, self.bg_color, (self.x, self.y, self.width, self.height), border_radius=10)
-            pygame.draw.rect(surface, (*self.bg_color, 100), (self.x, self.y, self.width, self.height),
-                          2, border_radius=10)
-           
+            # Draw background frame
+            bg_rect = pygame.Rect(self.x, self.y, self.width, self.height)
+            pygame.draw.rect(surface, self.bg_color, bg_rect, border_radius=10)
+            pygame.draw.rect(surface, WOOD_BROWN, bg_rect, 2, border_radius=10) # Border
+
             progress_ratio = self.current_value / self.max_value if self.max_value > 0 else 0
-           
+            progress_ratio = max(0, min(1, progress_ratio)) # Ensure ratio is between 0 and 1
+
             if self.style == "plant":
                 self.draw_plant_progress(surface, progress_ratio)
-            else:  # water style
+            else:
                 self.draw_water_progress(surface, progress_ratio)
-               
-            # Draw percentage text
-            text_color = WHITE if progress_ratio > 0.5 else TEXT_BROWN
+
+            # Draw percentage text (centered horizontally, near top)
+            text_color = TEXT_BROWN # Use consistent text color
             text = font_medium.render(f"{int(self.current_value)}%", True, text_color)
             text_rect = text.get_rect(center=(self.x + self.width/2, self.y + 25))
             surface.blit(text, text_rect)
-        except (pygame.error, ValueError, ZeroDivisionError) as e:
-            # Recover from rendering errors
-            pass
-           
-    def draw_plant_progress(self, surface, progress_ratio):
-        # Calculate how much of the vine to draw based on progress
-        visible_segments = math.ceil(progress_ratio * 10)
-       
-        if visible_segments > 0 and len(self.vine_points) > 1:
-            # Draw the vine
-            for i in range(min(visible_segments, len(self.vine_points) - 1)):
-                start_point = self.vine_points[i]
-                end_point = self.vine_points[i + 1]
-               
-                # Vary thickness slightly for natural look
-                thickness = random.randint(3, 5)
-                pygame.draw.line(surface, DARK_GREEN, start_point, end_point, thickness)
-               
-                # Draw leaves at predetermined positions
-                for leaf_idx, leaf_side in self.leaf_positions:
-                    if i == leaf_idx - 1:
-                        # Calculate leaf position
-                        leaf_x = (start_point[0] + end_point[0]) / 2
-                        leaf_y = (start_point[1] + end_point[1]) / 2
-                       
-                        # Draw leaf
-                        leaf_size = random.randint(5, 8)
-                        leaf_surf = pygame.Surface((leaf_size * 3, leaf_size * 2), pygame.SRCALPHA)
-                       
-                        # Leaf shape
-                        pygame.draw.ellipse(leaf_surf, LEAF_GREEN, (0, 0, leaf_size * 3, leaf_size * 2))
-                       
-                        # Rotate based on which side
-                        angle = 45 if leaf_side > 0 else -45
-                        rotated_leaf = pygame.transform.rotate(leaf_surf, angle)
-                        leaf_rect = rotated_leaf.get_rect(center=(leaf_x + (leaf_side * 15), leaf_y))
-                        surface.blit(rotated_leaf, leaf_rect)
-           
-            # Draw flower/plant top when progress is high
-            if progress_ratio > 0.9 and len(self.vine_points) > 0:
-                top_x, top_y = self.vine_points[-1]
-               
-                # Draw a simple flower
-                petal_color = (255, 200, 100)  # Yellow-orange
-                center_color = SUNSET_ORANGE
-               
-                # Petals (circles arranged in a flower pattern)
-                for angle in range(0, 360, 60):
-                    petal_x = top_x + 8 * math.cos(math.radians(angle))
-                    petal_y = top_y + 8 * math.sin(math.radians(angle))
-                    pygame.draw.circle(surface, petal_color, (petal_x, petal_y), 7)
-               
-                # Center of flower
-                pygame.draw.circle(surface, center_color, (top_x, top_y), 5)
-               
-    def draw_water_progress(self, surface, progress_ratio):
-        # Calculate fill height
-        fill_height = int(self.height * progress_ratio)
-       
-        if fill_height > 0:
-            # Draw water fill
-            water_rect = pygame.Rect(self.x, self.y + self.height - fill_height,
-                                  self.width, fill_height)
-            pygame.draw.rect(surface, self.color, water_rect, border_radius=10)
-           
-            # Add wave effect at the top of the water
-            wave_height = 3
-            wave_surface = pygame.Surface((self.width, wave_height * 2), pygame.SRCALPHA)
-           
-            # Draw a lighter colored wave pattern
-            lighter_color = LIGHT_BLUE
-            for x in range(0, self.width, 10):
-                offset = math.sin(time.time() * 2 + x * 0.1) * wave_height
-                pygame.draw.circle(wave_surface, lighter_color,
-                               (x, wave_height + offset), wave_height)
-           
-            # Place the wave at the top of the water level
-            surface.blit(wave_surface, (self.x, self.y + self.height - fill_height - wave_height))
+        except (pygame.error, ValueError, ZeroDivisionError, IndexError) as e:
+            print(f"Warning: Error drawing progress bar: {e}")
+            # Draw a simple fallback rectangle
+            pygame.draw.rect(surface, self.bg_color, (self.x, self.y, self.width, self.height), border_radius=10)
 
-# Modern, eco-friendly UI button
+
+    def draw_plant_progress(self, surface, progress_ratio):
+        visible_segments = math.ceil(progress_ratio * 10)
+
+        if visible_segments > 0 and len(self.vine_points) > 1:
+            # Draw vine
+            for i in range(min(visible_segments, len(self.vine_points) - 1)):
+                 # Check index bounds
+                if i + 1 < len(self.vine_points):
+                    start_point = self.vine_points[i]
+                    end_point = self.vine_points[i + 1]
+                    thickness = random.randint(3, 5)
+                    pygame.draw.line(surface, DARK_GREEN, start_point, end_point, thickness)
+
+                    # Draw leaves
+                    for leaf_idx, leaf_side in self.leaf_positions:
+                        if i == leaf_idx - 1:
+                            leaf_x = (start_point[0] + end_point[0]) / 2
+                            leaf_y = (start_point[1] + end_point[1]) / 2
+                            leaf_size = random.randint(5, 8)
+                            try:
+                                leaf_surf = pygame.Surface((leaf_size * 3, leaf_size * 2), pygame.SRCALPHA)
+                                pygame.draw.ellipse(leaf_surf, LEAF_GREEN, (0, 0, leaf_size * 3, leaf_size * 2))
+                                angle = 45 if leaf_side > 0 else -45
+                                rotated_leaf = pygame.transform.rotate(leaf_surf, angle)
+                                leaf_rect = rotated_leaf.get_rect(center=(leaf_x + (leaf_side * 15), leaf_y))
+                                surface.blit(rotated_leaf, leaf_rect)
+                            except pygame.error as leaf_err:
+                                print(f"Warning: Error drawing leaf: {leaf_err}")
+
+
+            # Draw flower top
+            if progress_ratio > 0.9 and len(self.vine_points) > 0:
+                 # Check index bounds before accessing vine_points[-1]
+                if len(self.vine_points) > 0:
+                    top_x, top_y = self.vine_points[-1]
+                    petal_color = (255, 200, 100)
+                    center_color = SUNSET_ORANGE
+                    try:
+                        for angle_deg in range(0, 360, 60):
+                            angle_rad = math.radians(angle_deg)
+                            petal_x = top_x + 8 * math.cos(angle_rad)
+                            petal_y = top_y + 8 * math.sin(angle_rad) # Use top_y here
+                            pygame.draw.circle(surface, petal_color, (int(petal_x), int(petal_y)), 7)
+                        pygame.draw.circle(surface, center_color, (int(top_x), int(top_y)), 5)
+                    except pygame.error as flower_err:
+                         print(f"Warning: Error drawing flower: {flower_err}")
+
+
+    def draw_water_progress(self, surface, progress_ratio):
+        fill_height = int(self.height * progress_ratio)
+
+        if fill_height > 0:
+            # Draw water fill with clipping for rounded corners
+            water_clip_rect = pygame.Rect(self.x, self.y, self.width, self.height) # Full background area
+            water_fill_rect = pygame.Rect(self.x, self.y + self.height - fill_height,
+                                       self.width, fill_height)
+            temp_surf = pygame.Surface(water_clip_rect.size, pygame.SRCALPHA)
+            pygame.draw.rect(temp_surf, self.color, (0, self.height - fill_height, self.width, fill_height), border_radius=10) # Draw fill on temp surface
+
+            # Apply clipping based on the rounded background rect
+            clip_mask = pygame.Surface(water_clip_rect.size, pygame.SRCALPHA)
+            pygame.draw.rect(clip_mask, (255, 255, 255, 255), (0, 0, self.width, self.height), border_radius=10)
+            temp_surf.blit(clip_mask, (0,0), special_flags=pygame.BLEND_RGBA_MULT) # Keep only where mask is white
+
+            surface.blit(temp_surf, water_clip_rect.topleft)
+
+
+            # Add wave effect
+            wave_height_amp = 3
+            wave_y_base = self.y + self.height - fill_height - wave_height_amp
+            try:
+                wave_surface = pygame.Surface((self.width, wave_height_amp * 2), pygame.SRCALPHA)
+                lighter_color = LIGHT_BLUE
+                num_points = self.width // 5 # Control wave detail
+                if num_points < 2: return # Need at least 2 points for polygon
+
+                wave_points = []
+                wave_points.append((0, wave_height_amp * 2)) # Bottom left for filling
+                for i in range(num_points + 1):
+                    x = int(i * (self.width / num_points))
+                    offset = math.sin(time.time() * 3 + x * 0.05) * wave_height_amp # Faster wave
+                    wave_points.append((x, wave_height_amp + offset))
+                wave_points.append((self.width, wave_height_amp * 2)) # Bottom right for filling
+
+                pygame.draw.polygon(wave_surface, lighter_color, wave_points)
+                surface.blit(wave_surface, (self.x, wave_y_base))
+            except pygame.error as wave_err:
+                 print(f"Warning: Error drawing wave: {wave_err}")
+
+
+# Eco-friendly UI button (Unchanged, graphical)
 class EcoButton:
     def __init__(self, x, y, width, height, text, color, hover_color, text_color=WHITE, border_radius=10):
         self.rect = pygame.Rect(x, y, width, height)
@@ -645,555 +320,407 @@ class EcoButton:
         self.text_color = text_color
         self.border_radius = border_radius
         self.hovered = False
-        self.animation = 0
-       
+        self.animation = 0 # Click animation timer
+
     def draw(self, surface):
         try:
             current_color = self.hover_color if self.hovered else self.color
+            # Click feedback: slightly darken
             if self.animation > 0:
                 self.animation -= 0.1
-                current_color = tuple(max(0, c - 20) for c in current_color)
-           
-            # Main button with rounded corners and natural gradient
+                # Create a slightly darker color for feedback
+                feedback_color = tuple(max(0, c - 30) for c in current_color[:3])
+                current_color = feedback_color
+
+            # Main button rectangle
             pygame.draw.rect(surface, current_color, self.rect, border_radius=self.border_radius)
-           
-            # Add subtle wood-like texture effect
-            for i in range(0, self.rect.height, 3):
-                texture_alpha = random.randint(5, 15)
-                texture_line = pygame.Surface((self.rect.width, 1), pygame.SRCALPHA)
-                texture_line.fill((*BLACK[:3], texture_alpha))
-                surface.blit(texture_line, (self.rect.left, self.rect.top + i))
-           
-            # Add subtle highlight on top
-            highlight_rect = pygame.Rect(self.rect.x, self.rect.y, self.rect.width, self.rect.height // 3)
-            for i in range(highlight_rect.height):
-                alpha = 30 - int((i / highlight_rect.height) * 30)
-                highlight_surface = pygame.Surface((highlight_rect.width, 1), pygame.SRCALPHA)
-                highlight_surface.fill((*WHITE[:3], alpha))
-                surface.blit(highlight_surface, (highlight_rect.left, highlight_rect.top + i))
-           
-            # Button text
+
+            # Subtle wood grain texture (optional, can be performance heavy)
+            # for i in range(0, int(self.rect.height), 4): # Fewer lines
+            #     texture_alpha = random.randint(10, 20)
+            #     texture_line = pygame.Surface((self.rect.width, 1), pygame.SRCALPHA)
+            #     texture_line.fill((*SOFT_BROWN[:3], texture_alpha))
+            #     surface.blit(texture_line, (self.rect.left, self.rect.top + i))
+
+            # Subtle top highlight
+            highlight_rect = pygame.Rect(self.rect.x + 5, self.rect.y + 3, self.rect.width - 10, self.rect.height // 4)
+            highlight_color = (*WHITE[:3], 30) # Subtle white highlight
+            pygame.draw.rect(surface, highlight_color, highlight_rect, border_radius=self.border_radius // 2)
+
+
+            # Border
+            pygame.draw.rect(surface, WOOD_BROWN, self.rect, 2, border_radius=self.border_radius)
+
+            # Text
             text_surf = font_medium.render(self.text, True, self.text_color)
             text_rect = text_surf.get_rect(center=self.rect.center)
             surface.blit(text_surf, text_rect)
-        except pygame.error:
-            # Handle rendering errors
-            pass
-       
+        except pygame.error as e:
+             print(f"Warning: Error drawing button: {e}")
+
+
     def check_hover(self, mouse_pos):
-        if not self.rect:  # Safety check
-            return False
-        self.hovered = self.rect.collidepoint(mouse_pos)
-        return self.hovered
-   
+        if self.rect:
+            self.hovered = self.rect.collidepoint(mouse_pos)
+            return self.hovered
+        return False
+
     def clicked(self):
-        self.animation = 1.0
+        self.animation = 1.0 # Start click animation
+        print(f"Button '{self.text}' clicked.") # Add feedback
         return True
 
-# Redesigned detection animation with natural, smooth loading
+# Redesigned detection animation (Unchanged, graphical/timing logic)
 class DetectionAnimation:
     def __init__(self, item_name, item_type):
-        self.item_name = item_name
-        self.item_type = item_type
+        self.item_name = item_name.upper() # Ensure uppercase
+        self.item_type = item_type.upper() # Ensure uppercase
         self.start_time = time.time()
-        self.phase = "dropping"  # dropping, scanning, revealing, feedback
+        self.phase = "dropping"
         self.phase_durations = {
-            "dropping": 1.5,
-            "scanning": 2.5,
-            "revealing": 2.0,
-            "feedback": 5.0
+            "dropping": 1.2, # Slightly faster drop
+            "scanning": 2.0, # Faster scan
+            "revealing": 1.5, # Faster reveal
+            "feedback": 4.0  # Shorter feedback time
         }
-        self.phases_completed = {
-            "dropping": False,
-            "scanning": False,
-            "revealing": False,
-            "feedback": False
-        }
+        # Use a simple elapsed time check instead of complicated phase booleans
+        self.total_duration = sum(self.phase_durations.values())
         self.stats_updated = False
-       
-        # Loading progress for scanning phase
+
         self.scan_progress = 0
-       
         self.reveal_alpha = 0
         self.particle_effects = []
-       
-        # Use natural colors based on item type
-        self.item_color = LEAF_GREEN if item_type.upper() == "RECYCLING" else SOFT_BROWN
-        self.item_image = self.create_item_image()
-       
+
+        self.item_color = LEAF_GREEN if self.item_type == "RECYCLING" else SOFT_BROWN
+        self.item_image = self.create_item_image() # Can return None if error occurs
+
         self.y_pos = -100
-        self.rotation = 0
-        self.rotation_speed = random.uniform(1, 3)
-        self.fall_speed = random.uniform(5, 8)
-        self.target_y = SCREEN_HEIGHT // 2 - 50
-       
-        # New loading bar for scanning
-        self.loading_width = 300
-        self.loading_height = 20
+        self.rotation = random.uniform(-15, 15) # Start with slight rotation
+        self.rotation_speed = random.uniform(-2, 2)
+        self.fall_speed = 8 # Consistent fall speed
+        self.target_y = SCREEN_HEIGHT // 2 - 60 # Slightly higher target
+
+        self.loading_width = 280 # Slightly smaller bar
+        self.loading_height = 18
         self.loading_x = SCREEN_WIDTH // 2 - self.loading_width // 2
-        self.loading_y = self.target_y + 80
-       
+        self.loading_y = self.target_y + 90 # Position below item
+
     def create_item_image(self):
         try:
             size = 80
             surf = pygame.Surface((size, size), pygame.SRCALPHA)
-           
-            # Create more organic, natural-looking item icons
-            if self.item_type.upper() == "RECYCLING":
-                if "bottle" in self.item_name.lower():
-                    # Bottle with a more curved, organic shape
-                    pygame.draw.rect(surf, self.item_color, (size//3, size//6, size//3, size*2//3),
-                                 border_radius=10)
-                    pygame.draw.ellipse(surf, self.item_color, (size//3 - 5, size//12, size//3 + 10, size//6))
-                   
-                    # Recycling symbol
-                    symbol_radius = 8
-                    symbol_center = (size//2, size//2 + 10)
-                    pygame.draw.circle(surf, WHITE, symbol_center, symbol_radius, 2)
-                   
-                elif "can" in self.item_name.lower():
-                    # Aluminum can with texture
-                    pygame.draw.rect(surf, self.item_color, (size//4, size//6, size//2, size*2//3),
-                                 border_radius=5)
-                   
-                    # Recycling symbol
-                    symbol_x = size//2
-                    symbol_y = size//2
-                    symbol_size = 12
-                   
-                    # Draw simplified recycling arrows
-                    for i in range(3):
-                        angle = math.radians(i * 120)
-                        x1 = symbol_x + symbol_size * math.cos(angle)
-                        y1 = symbol_y + symbol_size * math.sin(angle)
-                        x2 = symbol_x + symbol_size * math.cos(angle + math.radians(120))
-                        y2 = symbol_y + symbol_size * math.sin(angle + math.radians(120))
-                        pygame.draw.line(surf, WHITE, (x1, y1), (x2, y2), 2)
-                   
-                elif "paper" in self.item_name.lower() or "newspaper" in self.item_name.lower():
-                    # Paper with texture
-                    paper_color = LIGHT_CREAM
-                    pygame.draw.rect(surf, paper_color, (size//5, size//5, size*3//5, size*3//5))
-                   
-                    # Add paper texture lines
-                    for y in range(size//5, size*4//5, 5):
-                        line_alpha = random.randint(10, 30)
-                        pygame.draw.line(surf, (*SOFT_BROWN, line_alpha),
-                                     (size//5, y), (size*4//5, y), 1)
-                   
-                    # Fold corner
-                    pygame.draw.polygon(surf, (*paper_color, 180), [
-                        (size*4//5, size//5),
-                        (size*4//5, size//3),
-                        (size*2//3, size//5)
-                    ])
-                else:
-                    # Generic recyclable - leaf shape
-                    leaf_points = [
-                        (size//2, size//5),
-                        (size*3//4, size//3),
-                        (size*4//5, size//2),
-                        (size*3//4, size*2//3),
-                        (size//2, size*4//5),
-                        (size//4, size*2//3),
-                        (size//5, size//2),
-                        (size//4, size//3)
-                    ]
-                    pygame.draw.polygon(surf, self.item_color, leaf_points)
-                   
-                    # Leaf vein
-                    pygame.draw.line(surf, (*DARK_GREEN, 150),
-                                 (size//2, size//5), (size//2, size*4//5), 2)
-                   
-            else:  # landfill items
-                if "wrapper" in self.item_name.lower():
-                    # Crumpled wrapper with texture
-                    wrapper_points = [
-                        (size//4, size//4),
-                        (size*3//4, size//4),
-                        (size*4//5, size//2),
-                        (size*3//4, size*3//4),
-                        (size//4, size*3//4),
-                        (size//5, size//2)
-                    ]
-                    pygame.draw.polygon(surf, self.item_color, wrapper_points)
-                   
-                    # Add crinkle lines
-                    for _ in range(5):
-                        x1 = random.randint(size//4, size*3//4)
-                        y1 = random.randint(size//4, size*3//4)
-                        x2 = x1 + random.randint(-10, 10)
-                        y2 = y1 + random.randint(-10, 10)
-                        pygame.draw.line(surf, (*BLACK, 30), (x1, y1), (x2, y2), 1)
-                   
-                elif "cup" in self.item_name.lower():
-                    # Paper/styrofoam cup
-                    cup_color = LIGHT_CREAM if "paper" in self.item_name.lower() else WHITE
-                   
-                    # Cup body
-                    pygame.draw.polygon(surf, cup_color, [
-                        (size//3, size//4),
-                        (size*2//3, size//4),
-                        (size*3//5, size*3//4),
-                        (size*2//5, size*3//4)
-                    ])
-                   
-                    # Cup rim
-                    pygame.draw.ellipse(surf, cup_color, (size//3 - 5, size//5, size//2 + 10, size//8))
-                   
-                    # Cup texture
-                    if "paper" in self.item_name.lower():
-                        for y in range(size//4, size*3//4, 5):
-                            pygame.draw.line(surf, (*SOFT_BROWN, 30),
-                                         (size//3, y), (size*2//3, y), 1)
-                else:
-                    # Generic waste - irregular blob shape
-                    center_x = size // 2
-                    center_y = size // 2
-                    radius = size // 3
-                   
-                    points = []
-                    for angle in range(0, 360, 30):
-                        rad = math.radians(angle)
-                        radius_var = radius * random.uniform(0.8, 1.2)
-                        x = center_x + radius_var * math.cos(rad)
-                        y = center_y + radius_var * math.sin(rad)
-                        points.append((x, y))
-                       
-                    pygame.draw.polygon(surf, self.item_color, points)
-           
-            # Add subtle texture and highlights
-            for _ in range(3):
-                x = random.randint(size//4, size*3//4)
-                y = random.randint(size//4, size*3//4)
-                r = random.randint(2, 4)
-                highlight_color = (*WHITE, 70)
-                pygame.draw.circle(surf, highlight_color, (x, y), r)
-               
+            base_color = LEAF_GREEN if self.item_type == "RECYCLING" else SOFT_BROWN
+            border_color = DARK_GREEN if self.item_type == "RECYCLING" else WOOD_BROWN
+
+            # Simplified generic shapes based on type
+            if self.item_type == "RECYCLING":
+                # Rounded rectangle like a bottle/can
+                 pygame.draw.rect(surf, base_color, (size*0.2, size*0.1, size*0.6, size*0.8), border_radius=15)
+                 pygame.draw.rect(surf, border_color, (size*0.2, size*0.1, size*0.6, size*0.8), 2, border_radius=15)
+                 # Simple recycling arrow symbol
+                 center_x, center_y = size // 2, size // 2 + 10
+                 radius = size // 6
+                 pygame.draw.circle(surf, WHITE, (center_x, center_y), radius, 2)
+                 # Add small arrows (simplified)
+                 for i in range(3):
+                     angle = math.radians(i * 120 + 30) # Offset start angle
+                     start_angle = angle - math.radians(15)
+                     end_angle = angle + math.radians(15)
+                     # Calculate points for a small arrowhead
+                     p1 = (center_x + radius * math.cos(start_angle), center_y + radius * math.sin(start_angle))
+                     p2 = (center_x + (radius+5) * math.cos(angle), center_y + (radius+5) * math.sin(angle)) # Tip
+                     p3 = (center_x + radius * math.cos(end_angle), center_y + radius * math.sin(end_angle))
+                     pygame.draw.line(surf, WHITE, p1, p2, 2)
+                     pygame.draw.line(surf, WHITE, p2, p3, 2)
+
+
+            else: # TRASH
+                # Irregular blob shape
+                center_x, center_y = size // 2, size // 2
+                radius = size // 3
+                points = []
+                num_verts = random.randint(7, 11)
+                for i in range(num_verts):
+                    angle = math.radians(i * (360 / num_verts))
+                    radius_var = radius * random.uniform(0.7, 1.3)
+                    x = center_x + radius_var * math.cos(angle)
+                    y = center_y + radius_var * math.sin(angle)
+                    points.append((int(x), int(y)))
+                pygame.draw.polygon(surf, base_color, points)
+                pygame.draw.polygon(surf, border_color, points, 2)
+
+            # Subtle highlight
+            highlight_color = (*WHITE[:3], 60)
+            pygame.draw.circle(surf, highlight_color, (size // 3, size // 3), size // 5)
+
             return surf
-        except pygame.error:
-            # Return a fallback surface if image creation fails
-            fallback = pygame.Surface((80, 80), pygame.SRCALPHA)
-            pygame.draw.rect(fallback, self.item_color, (20, 20, 40, 40))
-            return fallback
-       
+        except pygame.error as e:
+             print(f"Warning: Error creating item image: {e}")
+             return None # Return None if creation fails
+
     def update(self):
+        if not self.item_image: # Stop if image failed to create
+             return True # End animation immediately
+
         try:
             current_time = time.time()
-            elapsed = current_time - self.start_time
-           
-            if self.phase == "dropping":
+            elapsed_total = current_time - self.start_time
+
+            # Determine current phase based on elapsed time
+            if elapsed_total < self.phase_durations["dropping"]:
+                self.phase = "dropping"
                 self.y_pos += self.fall_speed
                 self.rotation += self.rotation_speed
+                # Clamp position and stop falling
                 if self.y_pos >= self.target_y:
                     self.y_pos = self.target_y
-                    if not self.phases_completed["dropping"]:
-                        self.phase = "scanning"
-                        self.phases_completed["dropping"] = True
-                        self.start_time = current_time
-                   
-            elif self.phase == "scanning":
-                # Smooth loading bar progress
-                progress_percentage = min(100, (elapsed / self.phase_durations["scanning"]) * 100)
-                self.scan_progress = progress_percentage
-               
-                # Add leaf/drop particles during scanning
-                if random.random() < 0.1:
-                    self.add_natural_particle()
-                   
-                if elapsed >= self.phase_durations["scanning"] and not self.phases_completed["scanning"]:
-                    self.phase = "revealing"
-                    self.phases_completed["scanning"] = True
-                    self.start_time = current_time
-                   
-            elif self.phase == "revealing":
-                progress = min(1.0, elapsed / self.phase_durations["revealing"])
-                self.reveal_alpha = int(255 * progress)
-               
-                # Add celebratory particles
-                if random.random() < 0.2:
-                    self.add_reveal_particle()
-                self.update_particles()
-               
-                if elapsed >= self.phase_durations["revealing"] and not self.phases_completed["revealing"]:
-                    self.phase = "feedback"
-                    self.phases_completed["revealing"] = True
-                    self.start_time = current_time
-                   
-            elif self.phase == "feedback":
-                self.update_particles()
-               
-                if not self.stats_updated:
-                    self.stats_updated = True
-                   
-                if elapsed >= self.phase_durations["feedback"] and not self.phases_completed["feedback"]:
-                    self.phases_completed["feedback"] = True
-                    return True
-                   
-            return False
-        except (TypeError, ValueError) as e:
-            # Handle calculation errors by resetting to a safe state
-            self.phase = "feedback"
-            self.phases_completed["feedback"] = True
-            return True
-   
-    def add_natural_particle(self):
-        # Add nature-inspired particles during scanning
-        particle_type = "leaf" if self.item_type.upper() == "RECYCLING" else "sparkle"
-       
-        if particle_type == "leaf":
-            angle = random.uniform(0, math.pi * 2)
-            speed = random.uniform(1, 2)
-            self.particle_effects.append({
-                "type": "leaf",
-                "x": SCREEN_WIDTH // 2,
-                "y": self.loading_y,
-                "vx": math.cos(angle) * speed,
-                "vy": math.sin(angle) * speed,
-                "size": random.uniform(3, 6),
-                "color": LEAF_GREEN,
-                "rotation": random.uniform(0, 360),
-                "rot_speed": random.uniform(-3, 3),
-                "life": 1.0
-            })
-        else:
-            self.particle_effects.append({
-                "type": "sparkle",
-                "x": self.loading_x + (self.loading_width * self.scan_progress / 100),
-                "y": self.loading_y + random.uniform(-10, 10),
-                "vx": random.uniform(-1, 1),
-                "vy": random.uniform(-2, -0.5),
-                "size": random.uniform(1, 3),
-                "color": (*SUNSET_ORANGE, 150),
-                "life": 1.0
-            })
-       
-    def add_reveal_particle(self):
-        angle = random.uniform(0, math.pi * 2)
-        speed = random.uniform(1, 2.5)
-       
-        # Determine particle type based on item type
-        if self.item_type.upper() == "RECYCLING":
-            particle_type = random.choice(["leaf", "drop"])
-            if particle_type == "leaf":
-                color = LEAF_GREEN
+                    self.fall_speed = 0 # Stop falling
+                    self.rotation_speed *= 0.95 # Slow down rotation
+            elif elapsed_total < self.phase_durations["dropping"] + self.phase_durations["scanning"]:
+                self.phase = "scanning"
+                elapsed_in_phase = elapsed_total - self.phase_durations["dropping"]
+                self.scan_progress = min(100, (elapsed_in_phase / self.phase_durations["scanning"]) * 100)
+                # Add scanning particles
+                if random.random() < 0.15:
+                    self.add_natural_particle("scan")
+            elif elapsed_total < self.phase_durations["dropping"] + self.phase_durations["scanning"] + self.phase_durations["revealing"]:
+                self.phase = "revealing"
+                elapsed_in_phase = elapsed_total - (self.phase_durations["dropping"] + self.phase_durations["scanning"])
+                progress = min(1.0, elapsed_in_phase / self.phase_durations["revealing"])
+                self.reveal_alpha = int(255 * (progress**0.5)) # Ease-in alpha
+                # Add reveal particles
+                if random.random() < 0.25:
+                    self.add_natural_particle("reveal")
             else:
-                color = WATER_BLUE
-        else:
-            particle_type = "sparkle"
+                self.phase = "feedback"
+                self.reveal_alpha = 255 # Ensure fully visible
+                # Update stats only once
+                if not self.stats_updated:
+                    # This is where stats would be updated based on the result
+                    self.stats_updated = True
+                    print(f"Animation: Stats update trigger for {self.item_name} ({self.item_type})")
+
+            self.update_particles()
+
+            # Check if total animation time has passed
+            return elapsed_total >= self.total_duration
+
+        except (TypeError, ValueError, ZeroDivisionError) as e:
+            print(f"Warning: Error updating animation: {e}")
+            return True # End animation on error
+
+    def add_natural_particle(self, phase_type):
+        start_x = SCREEN_WIDTH // 2
+        start_y = self.y_pos + (self.item_image.get_height() // 2 if self.item_image else 0)
+
+        if phase_type == "scan":
+            start_x = self.loading_x + (self.loading_width * self.scan_progress / 100)
+            start_y = self.loading_y + self.loading_height / 2
+            angle = random.uniform(math.pi * 1.2, math.pi * 1.8) # Emit downwards
+            speed = random.uniform(0.5, 1.5)
+            ptype = "sparkle"
             color = SUNSET_ORANGE
-           
+            size = random.uniform(1, 3)
+        else: # reveal
+            angle = random.uniform(0, math.pi * 2)
+            speed = random.uniform(1.5, 3.0) # Faster particles
+            ptype = "leaf" if self.item_type == "RECYCLING" else "drop"
+            color = LEAF_GREEN if ptype == "leaf" else WATER_BLUE
+            size = random.uniform(3, 7)
+
+
         self.particle_effects.append({
-            "type": particle_type,
-            "x": SCREEN_WIDTH // 2,
-            "y": self.y_pos + self.item_image.get_height() // 2,
+            "type": ptype,
+            "x": start_x + random.uniform(-5, 5),
+            "y": start_y + random.uniform(-5, 5),
             "vx": math.cos(angle) * speed,
-            "vy": math.sin(angle) * speed,
-            "size": random.uniform(2, 5),
+            "vy": math.sin(angle) * speed - (0.5 if phase_type=="scan" else 0), # Add slight downward push for scan
+            "size": size,
             "color": color,
             "rotation": random.uniform(0, 360),
-            "rot_speed": random.uniform(-3, 3),
-            "life": 1.0
+            "rot_speed": random.uniform(-4, 4),
+            "life": random.uniform(0.8, 1.5) # Vary lifetime
         })
-       
+
     def update_particles(self):
-        for i in range(len(self.particle_effects)-1, -1, -1):
-            if i >= len(self.particle_effects):  # Safety check for index
-                continue
-               
+        for i in range(len(self.particle_effects) - 1, -1, -1):
             p = self.particle_effects[i]
             p["x"] += p["vx"]
             p["y"] += p["vy"]
-           
-            if "rotation" in p:
-                p["rotation"] += p["rot_speed"]
-               
-            p["life"] -= 0.02
+            p["vy"] += 0.05 # Simple gravity
+            p["rotation"] += p["rot_speed"]
+            p["life"] -= 0.015 # Faster fade
+            # Optional: fade color
+            # alpha = max(0, int(255 * (p["life"] / 1.0))) # Assuming initial life is ~1.0
+            # p["current_color"] = (*p["color"][:3], alpha)
+
+
             if p["life"] <= 0:
-                # Make sure we're not out of bounds
-                if 0 <= i < len(self.particle_effects):
-                    self.particle_effects.pop(i)
-               
+                self.particle_effects.pop(i)
+
     def draw_particles(self, surface):
         for p in self.particle_effects:
             try:
+                # Calculate alpha based on remaining life
+                # Use full alpha initially, fade quickly at the end
+                life_ratio = max(0, p['life'] / 1.0) # Assuming max life around 1.0-1.5
+                alpha = int(255 * min(1, life_ratio * 2)) # Fade faster towards end
+
+                if alpha <= 0: continue # Don't draw invisible particles
+
                 if p["type"] == "leaf":
-                    # Draw leaf particle
-                    leaf_size = p["size"]
-                    leaf_surf = pygame.Surface((leaf_size * 4, leaf_size * 3), pygame.SRCALPHA)
-                   
-                    leaf_color = (*p["color"], int(255 * p["life"]))
-                    pygame.draw.ellipse(leaf_surf, leaf_color, (0, 0, leaf_size * 3, leaf_size * 2))
-                   
-                    # Add stem
-                    stem_color = (*SOFT_BROWN, int(200 * p["life"]))
-                    pygame.draw.line(leaf_surf, stem_color,
-                                  (leaf_size * 1.5, leaf_size),
-                                  (leaf_size * 3, leaf_size * 1.5), 2)
-                   
-                    rotated_leaf = pygame.transform.rotate(leaf_surf, p["rotation"])
-                    leaf_rect = rotated_leaf.get_rect(center=(int(p["x"]), int(p["y"])))
-                    surface.blit(rotated_leaf, leaf_rect)
-                   
+                    size = p["size"]
+                    if size <= 0: continue
+                    part_surf = pygame.Surface((size * 3, size * 2), pygame.SRCALPHA)
+                    color = (*p["color"][:3], alpha)
+                    pygame.draw.ellipse(part_surf, color, (0, 0, size * 2, size * 1.5)) # Simpler leaf
+                    rotated_part = pygame.transform.rotate(part_surf, p["rotation"])
+                    part_rect = rotated_part.get_rect(center=(int(p["x"]), int(p["y"])))
+                    surface.blit(rotated_part, part_rect)
                 elif p["type"] == "drop":
-                    # Draw water drop particle
-                    drop_size = p["size"]
-                    drop_surf = pygame.Surface((drop_size * 2, drop_size * 3), pygame.SRCALPHA)
-                   
-                    drop_color = (*p["color"], int(200 * p["life"]))
-                    pygame.draw.circle(drop_surf, drop_color, (drop_size, drop_size), drop_size)
-                    points = [
-                        (drop_size - drop_size/2, drop_size),
-                        (drop_size + drop_size/2, drop_size),
-                        (drop_size, drop_size * 2.5)
-                    ]
-                    pygame.draw.polygon(drop_surf, drop_color, points)
-                   
-                    rotated_drop = pygame.transform.rotate(drop_surf, p["rotation"] / 5)
-                    drop_rect = rotated_drop.get_rect(center=(int(p["x"]), int(p["y"])))
-                    surface.blit(rotated_drop, drop_rect)
-                   
-                else:  # sparkle
-                    # Draw simple sparkle/star particle
-                    sparkle_color = (*p["color"][:3], int(p["color"][3] * p["life"]))
-                    for angle in range(0, 360, 45):
-                        end_x = p["x"] + math.cos(math.radians(angle)) * p["size"] * 2
-                        end_y = p["y"] + math.sin(math.radians(angle)) * p["size"] * 2
-                        pygame.draw.line(surface, sparkle_color,
-                                     (int(p["x"]), int(p["y"])),
-                                     (int(end_x), int(end_y)), 1)
-            except (pygame.error, KeyError, TypeError) as e:
-                # Skip rendering this particle if there's an error
-                continue
-               
+                    size = p["size"]
+                    if size <= 0: continue
+                    part_surf = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
+                    color = (*p["color"][:3], alpha)
+                    pygame.draw.circle(part_surf, color, (size, size), size) # Simple circle drop
+                    part_rect = part_surf.get_rect(center=(int(p["x"]), int(p["y"])))
+                    surface.blit(part_surf, part_rect)
+                else: # sparkle
+                    size = p["size"]
+                    if size <= 0: continue
+                    color = (*p["color"][:3], alpha)
+                    center_x, center_y = int(p["x"]), int(p["y"])
+                    # Draw radiating lines for sparkle
+                    num_lines = 5
+                    for i in range(num_lines):
+                        angle = p["rotation"] + i * (360 / num_lines)
+                        rad = math.radians(angle)
+                        end_x = center_x + math.cos(rad) * size * 1.5
+                        end_y = center_y + math.sin(rad) * size * 1.5
+                        pygame.draw.line(surface, color, (center_x, center_y), (int(end_x), int(end_y)), 1)
+
+            except (pygame.error, KeyError, TypeError, ValueError) as e:
+                print(f"Warning: Error drawing particle: {e}")
+                # Attempt to remove the problematic particle
+                try:
+                    self.particle_effects.remove(p)
+                except ValueError:
+                    pass # Already removed
+
     def draw(self, surface):
+        if not self.item_image: return # Don't draw if image failed
+
         try:
-            if self.phase == "dropping":
-                rotated_image = pygame.transform.rotate(self.item_image, self.rotation)
-                rotated_rect = rotated_image.get_rect(center=(SCREEN_WIDTH // 2, self.y_pos))
-                surface.blit(rotated_image, rotated_rect)
-               
-            elif self.phase == "scanning":
-                # Draw the item
-                surface.blit(self.item_image, (SCREEN_WIDTH // 2 - self.item_image.get_width() // 2, self.y_pos))
-               
-                # Draw natural-looking loading bar with wood texture background
-                # Background
+            # Draw Item
+            rotated_image = pygame.transform.rotate(self.item_image, self.rotation)
+            rotated_rect = rotated_image.get_rect(center=(SCREEN_WIDTH // 2, int(self.y_pos)))
+            surface.blit(rotated_image, rotated_rect)
+
+            # Draw Phase-Specific Elements
+            if self.phase == "scanning":
+                # Loading Bar Background
                 loading_bg_rect = pygame.Rect(self.loading_x, self.loading_y, self.loading_width, self.loading_height)
-                pygame.draw.rect(surface, LIGHT_BROWN, loading_bg_rect, border_radius=10)
-               
-                # Wood grain texture
-                for y in range(self.loading_y, self.loading_y + self.loading_height, 2):
-                    texture_alpha = random.randint(10, 30)
-                    texture_width = random.randint(self.loading_width - 20, self.loading_width)
-                    texture_x = self.loading_x + random.randint(0, 20)
-                    texture_line = pygame.Surface((texture_width, 1), pygame.SRCALPHA)
-                    texture_line.fill((*SOFT_BROWN, texture_alpha))
-                    surface.blit(texture_line, (texture_x, y))
-               
-                # Progress fill - use green for recycling, earth tone for landfill
-                fill_color = LEAF_GREEN if self.item_type.upper() == "RECYCLING" else SOFT_BROWN
+                pygame.draw.rect(surface, LIGHT_BROWN, loading_bg_rect, border_radius=8)
+                # Loading Bar Fill
+                fill_color = LEAF_GREEN if self.item_type == "RECYCLING" else SOFT_BROWN
                 fill_width = int(self.loading_width * (self.scan_progress / 100))
                 if fill_width > 0:
                     fill_rect = pygame.Rect(self.loading_x, self.loading_y, fill_width, self.loading_height)
-                    pygame.draw.rect(surface, fill_color, fill_rect, border_radius=10)
-                   
-                    # Add some texture to the filled part
-                    for y in range(self.loading_y, self.loading_y + self.loading_height, 3):
-                        if random.random() < 0.7:  # Only add texture to some lines
-                            highlight_alpha = random.randint(20, 40)
-                            highlight_line = pygame.Surface((fill_width, 1), pygame.SRCALPHA)
-                            highlight_line.fill((*WHITE, highlight_alpha))
-                            surface.blit(highlight_line, (self.loading_x, y))
-               
-                # Border
-                pygame.draw.rect(surface, WOOD_BROWN, loading_bg_rect, 2, border_radius=10)
-               
-                # Status text
+                    pygame.draw.rect(surface, fill_color, fill_rect, border_radius=8)
+                 # Loading Bar Border
+                pygame.draw.rect(surface, WOOD_BROWN, loading_bg_rect, 2, border_radius=8)
+                # Status Text
                 text = font_medium.render("Analyzing...", True, TEXT_BROWN)
-                text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, self.loading_y - 20))
+                text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, self.loading_y - 25)) # Position above bar
                 surface.blit(text, text_rect)
-               
-                # Draw particles
-                self.draw_particles(surface)
-                   
+
             elif self.phase in ["revealing", "feedback"]:
-                # Draw the item
-                surface.blit(self.item_image, (SCREEN_WIDTH // 2 - self.item_image.get_width() // 2, self.y_pos))
-               
-                # Draw particles
-                self.draw_particles(surface)
-               
-                # Fade in text animation
-                alpha = self.reveal_alpha if self.phase == "revealing" else 255
-               
-                # Item name with natural background
-                name_bg = pygame.Surface((300, 40), pygame.SRCALPHA)
-                name_bg.fill((*CREAM, alpha * 0.7))
-                name_bg_rect = name_bg.get_rect(center=(SCREEN_WIDTH // 2, self.y_pos - 50))
-                surface.blit(name_bg, name_bg_rect)
-               
+                # Common drawing for revealing/feedback phases
+
+                # Calculate center positions for text based on current item position
+                text_center_x = SCREEN_WIDTH // 2
+                text_base_y = self.y_pos + rotated_rect.height // 2 + 20 # Below item image
+
+                # Item Name Text (with subtle background)
                 name_surf = font_large.render(self.item_name, True, TEXT_BROWN)
-                name_surf.set_alpha(alpha)
-                name_rect = name_surf.get_rect(center=(SCREEN_WIDTH // 2, self.y_pos - 50))
+                name_surf.set_alpha(self.reveal_alpha)
+                name_rect = name_surf.get_rect(center=(text_center_x, text_base_y + 20))
+                 # Background panel for name
+                name_bg_rect = name_rect.inflate(20, 10) # Add padding
+                name_bg_surf = pygame.Surface(name_bg_rect.size, pygame.SRCALPHA)
+                name_bg_surf.fill((*CREAM[:3], int(180 * (self.reveal_alpha / 255)))) # Semi-transparent cream
+                pygame.draw.rect(name_bg_surf, (*WOOD_BROWN[:3], int(200 * (self.reveal_alpha / 255))), name_bg_surf.get_rect(), 2, border_radius=5) # Border
+                surface.blit(name_bg_surf, name_bg_rect.topleft)
                 surface.blit(name_surf, name_rect)
-               
-                # Show item type with natural look
-                type_color = LEAF_GREEN if self.item_type.upper() == "RECYCLING" else SOFT_BROWN
-                type_text = "Recyclable" if self.item_type.upper() == "RECYCLING" else "Non-Recyclable"
-               
-                type_bg = pygame.Surface((200, 30), pygame.SRCALPHA)
-                type_bg.fill((*CREAM, alpha * 0.7))
-                type_bg_rect = type_bg.get_rect(center=(SCREEN_WIDTH // 2, self.y_pos - 20))
-                surface.blit(type_bg, type_bg_rect)
-               
+
+
+                # Item Type Text (Recyclable/Non-Recyclable)
+                type_color = DARK_GREEN if self.item_type == "RECYCLING" else SOFT_BROWN
+                type_text = "Recyclable" if self.item_type == "RECYCLING" else "Landfill"
                 type_surf = font_medium.render(type_text, True, type_color)
-                type_surf.set_alpha(alpha)
-                type_rect = type_surf.get_rect(center=(SCREEN_WIDTH // 2, self.y_pos - 20))
+                type_surf.set_alpha(self.reveal_alpha)
+                type_rect = type_surf.get_rect(center=(text_center_x, text_base_y + 60))
+                # Background panel for type
+                type_bg_rect = type_rect.inflate(15, 8)
+                type_bg_surf = pygame.Surface(type_bg_rect.size, pygame.SRCALPHA)
+                type_bg_surf.fill((*CREAM[:3], int(160 * (self.reveal_alpha / 255))))
+                pygame.draw.rect(type_bg_surf, (*WOOD_BROWN[:3], int(180 * (self.reveal_alpha / 255))), type_bg_surf.get_rect(), 1, border_radius=5)
+                surface.blit(type_bg_surf, type_bg_rect.topleft)
                 surface.blit(type_surf, type_rect)
-               
-                # Countdown timer for feedback phase with natural styling
+
+
+                # Feedback Phase Specifics
                 if self.phase == "feedback":
-                    time_left = self.phase_durations["feedback"] - (time.time() - self.start_time)
-                   
-                    prompt_bg = pygame.Surface((260, 40), pygame.SRCALPHA)
-                    prompt_bg.fill((*CREAM, 180))
-                    prompt_bg_rect = prompt_bg.get_rect(center=(SCREEN_WIDTH // 2, self.y_pos + 100))
-                    pygame.draw.rect(prompt_bg, WOOD_BROWN, (0, 0, prompt_bg.get_width(), prompt_bg.get_height()), 2, border_radius=10)
-                    surface.blit(prompt_bg, prompt_bg_rect)
-                   
+                    time_left = max(0, self.total_duration - (time.time() - self.start_time))
                     prompt_text = f"Is this correct? ({int(time_left)}s)"
                     prompt_surf = font_medium.render(prompt_text, True, TEXT_BROWN)
-                    prompt_rect = prompt_surf.get_rect(center=(SCREEN_WIDTH // 2, self.y_pos + 100))
+                    prompt_rect = prompt_surf.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 150)) # Above buttons
+                    # Background for prompt
+                    prompt_bg_rect = prompt_rect.inflate(20, 10)
+                    prompt_bg_surf = pygame.Surface(prompt_bg_rect.size, pygame.SRCALPHA)
+                    prompt_bg_surf.fill((*LIGHT_CREAM[:3], 190))
+                    pygame.draw.rect(prompt_bg_surf, WOOD_BROWN, prompt_bg_surf.get_rect(), 2, border_radius=8)
+                    surface.blit(prompt_bg_surf, prompt_bg_rect.topleft)
                     surface.blit(prompt_surf, prompt_rect)
-        except (pygame.error, TypeError, ValueError, ZeroDivisionError) as e:
-            # Handle any rendering errors gracefully
-            pass
+
+
+            # Draw particles on top of everything else in this animation
+            self.draw_particles(surface)
+
+        except (pygame.error, TypeError, ValueError, ZeroDivisionError, AttributeError) as e:
+             print(f"Warning: Error drawing detection animation phase '{self.phase}': {e}")
+             # Attempt to gracefully end the animation if drawing fails badly
+             self.phase = "feedback" # Jump to end state visually
+             self.start_time = time.time() - self.total_duration # Mark as finished
+
 
 # Modern UI with sustainability theme
 class SmartBinInterface:
     def __init__(self):
         self.stats = BinStats()
         self.nature_elements = [NatureElement() for _ in range(15)]
-        self.state = "idle"  # idle, detecting, feedback
+        self.state = "idle"
         self.detection_animation = None
-       
-        # Natural looking progress indicators
+
+        pb_width, pb_height = 140, 200
+        pb_y = SCREEN_HEIGHT // 2 - pb_height // 2 + 20 # Centered vertically offset by header
+        pb_x_margin = 180 # Distance from center
+
         self.recycling_progress = NaturalProgressBar(
-            SCREEN_WIDTH // 4 - 70, SCREEN_HEIGHT // 2 - 100, 140, 200,
+            SCREEN_WIDTH // 2 - pb_x_margin - pb_width // 2, pb_y, pb_width, pb_height,
             LEAF_GREEN, LIGHT_CREAM, style="plant"
         )
         self.landfill_progress = NaturalProgressBar(
-            SCREEN_WIDTH * 3 // 4 - 70, SCREEN_HEIGHT // 2 - 100, 140, 200,
+            SCREEN_WIDTH // 2 + pb_x_margin - pb_width // 2, pb_y, pb_width, pb_height,
             WATER_BLUE, LIGHT_CREAM, style="water"
         )
-        self.recycling_progress.set_value(70)  # Example values
-        self.landfill_progress.set_value(30)
-       
-        # Eco-friendly buttons
+        # Start progress bars empty or load from saved state if implemented
+        self.recycling_progress.set_value(0)
+        self.landfill_progress.set_value(0)
+
         button_width = 160
         button_height = 50
-        button_y = SCREEN_HEIGHT - 120
+        button_y = SCREEN_HEIGHT - 80 # Position buttons lower
         self.correct_button = EcoButton(
             SCREEN_WIDTH // 2 - button_width - 20, button_y, button_width, button_height,
             "Correct", LEAF_GREEN, LIGHT_GREEN
@@ -1202,643 +729,505 @@ class SmartBinInterface:
             SCREEN_WIDTH // 2 + 20, button_y, button_width, button_height,
             "Incorrect", SOFT_BROWN, LIGHT_BROWN
         )
-       
-        # Eco tips - at bottom of screen
-        self.last_hint_time = time.time()
-        self.hint_interval = 30
+
+        self.last_hint_time = 0 # Show first hint immediately
+        self.hint_interval = 25 # Shorter hint interval
         self.hints = [
-            "SmartBin™ uses AI to automatically sort your waste",
-            "Recycling properly reduces landfill waste by up to 75%",
-            "Even a single contaminated item can ruin an entire recycling batch",
-            "SmartBin™ has prevented over 10,000 tons of waste from landfills",
-            "Our accuracy rate in sorting waste is over 95%",
-            "Thank you for helping make our planet greener!",
-            "Plastic bottles take 450+ years to decompose in landfills",
-            "Glass can be recycled infinitely without losing quality",
-            "Paper can be recycled 5-7 times before fibers break down"
+            "SmartBin™ uses AI to sort waste accurately.",
+            "Recycling reduces landfill waste and saves resources.",
+            "Contamination ruins recycling - please sort carefully!",
+            "Over 95% accuracy in waste sorting!",
+            "Thank you for helping keep the planet green!",
+            "Plastic bottles take over 400 years to decompose.",
+            "Glass is infinitely recyclable!",
+            "Recycle paper 5-7 times before fibers weaken.",
+            "Check local guidelines for specific recycling rules.",
+            "Reduce, Reuse, Recycle - in that order!",
         ]
         self.current_hint = random.choice(self.hints)
         self.hint_alpha = 0
         self.hint_fade_in = True
-       
-        # Example waste items for fallback if camera detection fails
-        self.waste_items = [
-            {"name": "Plastic Bottle", "type": "RECYCLING"},
-            {"name": "Aluminum Can", "type": "RECYCLING"},
-            {"name": "Glass Bottle", "type": "RECYCLING"},
-            {"name": "Cardboard Box", "type": "RECYCLING"},
-            {"name": "Paper Cup", "type": "RECYCLING"},
-            {"name": "Newspaper", "type": "RECYCLING"},
-            {"name": "Plastic Wrapper", "type": "TRASH"},
-            {"name": "Styrofoam Cup", "type": "TRASH"},
-            {"name": "Food Waste", "type": "TRASH"},
-            {"name": "Candy Wrapper", "type": "TRASH"},
-            {"name": "Dirty Pizza Box", "type": "TRASH"},
-            {"name": "Used Tissue", "type": "TRASH"}
-        ]
-       
+        self.hint_display_duration = 8 # How long hint stays fully visible
+        self.hint_fade_duration = 1.5 # How long fade takes
+        self.hint_state = "fading_in" # fading_in, visible, fading_out
+        self.hint_visible_start_time = 0
+
+
     def update_nature_elements(self):
         for element in self.nature_elements:
             element.update()
-           
+
     def draw_nature_elements(self, surface):
         for element in self.nature_elements:
             element.draw(surface)
-           
+
     def update_progress_bars(self):
         self.recycling_progress.update()
         self.landfill_progress.update()
-       
+
     def draw_progress_bars(self, surface):
         try:
-            # Draw wood-textured cards for each progress indicator
-            recycling_card = pygame.Rect(SCREEN_WIDTH // 4 - 100, SCREEN_HEIGHT // 2 - 150, 200, 280)
-            landfill_card = pygame.Rect(SCREEN_WIDTH * 3 // 4 - 100, SCREEN_HEIGHT // 2 - 150, 200, 280)
-           
-            for card in [recycling_card, landfill_card]:
-                # Card background with wood texture
-                pygame.draw.rect(surface, CREAM, card, border_radius=15)
-               
-                # Add wood grain texture
-                for y in range(card.y, card.y + card.height, 4):
-                    texture_alpha = random.randint(5, 15)
-                    texture_width = random.randint(card.width - 30, card.width)
-                    texture_x = card.x + random.randint(0, 30)
-                    texture_line = pygame.Surface((texture_width, 2), pygame.SRCALPHA)
-                    texture_line.fill((*SOFT_BROWN, texture_alpha))
-                    surface.blit(texture_line, (texture_x, y))
-               
-                # Card border
-                pygame.draw.rect(surface, WOOD_BROWN, card, 2, border_radius=15)
-           
-            # Draw progress indicators
+            # Define card areas slightly larger than progress bars
+            card_padding = 20
+            recycling_card_rect = pygame.Rect(
+                self.recycling_progress.x - card_padding,
+                self.recycling_progress.y - 40, # Extend upwards for label
+                self.recycling_progress.width + 2 * card_padding,
+                self.recycling_progress.height + 60 # Room for label and count
+            )
+            landfill_card_rect = pygame.Rect(
+                self.landfill_progress.x - card_padding,
+                self.landfill_progress.y - 40,
+                self.landfill_progress.width + 2 * card_padding,
+                self.landfill_progress.height + 60
+            )
+
+            # Draw cards with background and border
+            for card_rect in [recycling_card_rect, landfill_card_rect]:
+                pygame.draw.rect(surface, CREAM, card_rect, border_radius=15)
+                # Optional: Add subtle texture here if needed
+                pygame.draw.rect(surface, WOOD_BROWN, card_rect, 2, border_radius=15)
+
+            # Draw progress indicators on top of cards
             self.recycling_progress.draw(surface)
             self.landfill_progress.draw(surface)
-           
-            # Labels with natural styling
+
+            # Labels (Positioned above progress bars within the card)
             recycling_label = font_medium.render("Recycling", True, DARK_GREEN)
-            recycling_rect = recycling_label.get_rect(center=(SCREEN_WIDTH // 4, SCREEN_HEIGHT // 2 - 130))
+            recycling_rect = recycling_label.get_rect(center=(self.recycling_progress.x + self.recycling_progress.width / 2, self.recycling_progress.y - 20))
             surface.blit(recycling_label, recycling_rect)
-           
+
             landfill_label = font_medium.render("Landfill", True, TEXT_BROWN)
-            landfill_rect = landfill_label.get_rect(center=(SCREEN_WIDTH * 3 // 4, SCREEN_HEIGHT // 2 - 130))
+            landfill_rect = landfill_label.get_rect(center=(self.landfill_progress.x + self.landfill_progress.width / 2, self.landfill_progress.y - 20))
             surface.blit(landfill_label, landfill_rect)
-           
-            # Draw leaf decorations near labels
-            leaf_size = 15
-            leaf_surf = pygame.Surface((leaf_size * 2, leaf_size), pygame.SRCALPHA)
-            pygame.draw.ellipse(leaf_surf, LEAF_GREEN, (0, 0, leaf_size * 1.5, leaf_size))
-            leaf_rect = leaf_surf.get_rect(center=(recycling_rect.left - 20, recycling_rect.centery))
-            surface.blit(leaf_surf, leaf_rect)
-           
-            drop_size = 12
-            drop_surf = pygame.Surface((drop_size, drop_size * 1.5), pygame.SRCALPHA)
-            drop_points = [
-                (drop_size/2, 0),
-                (drop_size, drop_size),
-                (drop_size/2, drop_size * 1.5),
-                (0, drop_size)
-            ]
-            pygame.draw.polygon(drop_surf, WATER_BLUE, drop_points)
-            drop_rect = drop_surf.get_rect(center=(landfill_rect.left - 20, landfill_rect.centery))
-            surface.blit(drop_surf, drop_rect)
-           
-            # Draw item counts with natural styling
+
+            # Item Counts (Positioned below progress bars)
+            count_y = self.recycling_progress.y + self.recycling_progress.height + 15
+            recycling_count_text = f"{self.stats.recycled_items} items"
+            recycling_count_surf = font_small.render(recycling_count_text, True, DARK_GREEN)
+            recycling_count_rect = recycling_count_surf.get_rect(center=(recycling_rect.centerx, count_y))
+            surface.blit(recycling_count_surf, recycling_count_rect)
+
+            landfill_count_text = f"{self.stats.landfill_items} items"
+            landfill_count_surf = font_small.render(landfill_count_text, True, TEXT_BROWN)
+            landfill_count_rect = landfill_count_surf.get_rect(center=(landfill_rect.centerx, count_y))
+            surface.blit(landfill_count_surf, landfill_count_rect)
+
+
+            # Draw Environmental Impact Section (Only if items have been processed)
             if self.stats.total_items > 0:
-                recycling_count_bg = pygame.Surface((100, 30), pygame.SRCALPHA)
-                recycling_count_bg.fill((*LIGHT_GREEN, 100))
-                count_bg_rect = recycling_count_bg.get_rect(
-                    center=(SCREEN_WIDTH // 4, SCREEN_HEIGHT // 2 + 120)
-                )
-                surface.blit(recycling_count_bg, count_bg_rect)
-               
-                recycling_count = font_small.render(f"{self.stats.recycled_items} items", True, DARK_GREEN)
-                recycling_count_rect = recycling_count.get_rect(
-                    center=(SCREEN_WIDTH // 4, SCREEN_HEIGHT // 2 + 120)
-                )
-                surface.blit(recycling_count, recycling_count_rect)
-               
-                landfill_count_bg = pygame.Surface((100, 30), pygame.SRCALPHA)
-                landfill_count_bg.fill((*LIGHT_BLUE, 100))
-                landfill_bg_rect = landfill_count_bg.get_rect(
-                    center=(SCREEN_WIDTH * 3 // 4, SCREEN_HEIGHT // 2 + 120)
-                )
-                surface.blit(landfill_count_bg, landfill_bg_rect)
-               
-                landfill_count = font_small.render(f"{self.stats.landfill_items} items", True, TEXT_BROWN)
-                landfill_count_rect = landfill_count.get_rect(
-                    center=(SCREEN_WIDTH * 3 // 4, SCREEN_HEIGHT // 2 + 120)
-                )
-                surface.blit(landfill_count, landfill_count_rect)
-               
-                # Environmental impact with natural styling
-                impact_card = pygame.Rect(SCREEN_WIDTH // 2 - 200, SCREEN_HEIGHT - 90, 400, 70)
-               
-                # Card with texture
-                pygame.draw.rect(surface, CREAM, impact_card, border_radius=10)
-                for y in range(impact_card.y, impact_card.y + impact_card.height, 3):
-                    if random.random() < 0.7:
-                        texture_alpha = random.randint(5, 15)
-                        texture_width = random.randint(impact_card.width - 40, impact_card.width)
-                        texture_x = impact_card.x + random.randint(0, 40)
-                        texture_line = pygame.Surface((texture_width, 1), pygame.SRCALPHA)
-                        texture_line.fill((*SOFT_BROWN, texture_alpha))
-                        surface.blit(texture_line, (texture_x, y))
-               
-                pygame.draw.rect(surface, WOOD_BROWN, impact_card, 2, border_radius=10)
-               
-                # Title
-                impact_title = font_medium.render("Environmental Impact", True, TEXT_BROWN)
-                impact_title_rect = impact_title.get_rect(
-                    center=(SCREEN_WIDTH // 2, impact_card.y + 20)
-                )
-                surface.blit(impact_title, impact_title_rect)
-               
-                # Impact stats with icons
-                co2_text = f"{self.stats.co2_saved:.1f}kg CO₂ saved"
-                co2_surf = font_small.render(co2_text, True, DARK_GREEN)
-                co2_rect = co2_surf.get_rect(midright=(SCREEN_WIDTH // 2 - 20, impact_card.y + 45))
-                surface.blit(co2_surf, co2_rect)
-               
-                # Simple leaf icon
-                leaf_icon_size = 15
-                leaf_icon = pygame.Surface((leaf_icon_size * 1.5, leaf_icon_size), pygame.SRCALPHA)
-                pygame.draw.ellipse(leaf_icon, LEAF_GREEN, (0, 0, leaf_icon_size, leaf_icon_size))
-                pygame.draw.line(leaf_icon, DARK_GREEN,
-                              (leaf_icon_size/2, 0), (leaf_icon_size/2, leaf_icon_size), 1)
-                leaf_icon_rect = leaf_icon.get_rect(midright=(co2_rect.left - 5, co2_rect.centery))
-                surface.blit(leaf_icon, leaf_icon_rect)
-               
-                water_text = f"{self.stats.water_saved:.1f}L water saved"
-                water_surf = font_small.render(water_text, True, WATER_BLUE)
-                water_rect = water_surf.get_rect(midleft=(SCREEN_WIDTH // 2 + 20, impact_card.y + 45))
-                surface.blit(water_surf, water_rect)
-               
-                # Simple water drop icon
-                drop_icon_size = 12
-                drop_icon = pygame.Surface((drop_icon_size, drop_icon_size * 1.5), pygame.SRCALPHA)
-                drop_icon_points = [
-                    (drop_icon_size/2, 0),
-                    (drop_icon_size, drop_icon_size),
-                    (drop_icon_size/2, drop_icon_size * 1.5),
-                    (0, drop_icon_size)
-                ]
-                pygame.draw.polygon(drop_icon, WATER_BLUE, drop_icon_points)
-                drop_icon_rect = drop_icon.get_rect(midleft=(water_rect.right + 5, water_rect.centery))
-                surface.blit(drop_icon, drop_icon_rect)
+                 impact_card_height = 65
+                 impact_card_y = SCREEN_HEIGHT - impact_card_height - 10 # Position at bottom
+                 impact_card = pygame.Rect(SCREEN_WIDTH // 2 - 180, impact_card_y, 360, impact_card_height)
+
+                 # Draw card background and border
+                 pygame.draw.rect(surface, CREAM, impact_card, border_radius=10)
+                 pygame.draw.rect(surface, WOOD_BROWN, impact_card, 2, border_radius=10)
+
+                 # Impact Title
+                 impact_title = font_medium.render("Environmental Impact", True, TEXT_BROWN)
+                 impact_title_rect = impact_title.get_rect(center=(impact_card.centerx, impact_card.y + 18))
+                 surface.blit(impact_title, impact_title_rect)
+
+                 # Impact Stats (CO2 and Water Saved)
+                 stats_y = impact_card.y + 45
+                 icon_size = 15
+
+                 # CO2 Saved
+                 co2_text = f"{self.stats.co2_saved:.1f} kg CO₂"
+                 co2_surf = font_small.render(co2_text, True, DARK_GREEN)
+                 co2_rect = co2_surf.get_rect(midright=(impact_card.centerx - 10, stats_y))
+                 surface.blit(co2_surf, co2_rect)
+                 # Leaf Icon
+                 leaf_icon_rect = pygame.Rect(0, 0, icon_size, icon_size * 0.8)
+                 leaf_icon_rect.midright = (co2_rect.left - 5, stats_y)
+                 pygame.draw.ellipse(surface, LEAF_GREEN, leaf_icon_rect)
+
+                 # Water Saved
+                 water_text = f"{self.stats.water_saved:.1f} L Water"
+                 water_surf = font_small.render(water_text, True, WATER_BLUE)
+                 water_rect = water_surf.get_rect(midleft=(impact_card.centerx + 10, stats_y))
+                 surface.blit(water_surf, water_rect)
+                 # Drop Icon
+                 drop_icon_rect = pygame.Rect(0, 0, icon_size * 0.7, icon_size)
+                 drop_icon_rect.midleft = (water_rect.right + 5, stats_y)
+                 pygame.draw.ellipse(surface, WATER_BLUE, drop_icon_rect)
+
+
         except (pygame.error, TypeError, ValueError) as e:
-            # Handle rendering errors
-            pass
-           
+            print(f"Warning: Error drawing progress bars/stats: {e}")
+
+
     def update_hint(self):
         current_time = time.time()
-       
-        # Fade effect for hints
-        if self.hint_fade_in:
-            self.hint_alpha = min(255, self.hint_alpha + 2)
-            if self.hint_alpha >= 255:
-                self.hint_fade_in = False
-        else:
-            self.hint_alpha = max(0, self.hint_alpha - 2)
-            if self.hint_alpha <= 0:
-                self.hint_fade_in = True
-               
-        # Cycle through hints
-        if current_time - self.last_hint_time > self.hint_interval:
-            self.last_hint_time = current_time
-            self.current_hint = random.choice(self.hints)
-            self.hint_alpha = 0
-            self.hint_fade_in = True
-           
+        time_since_change = current_time - self.last_hint_time
+
+        if self.hint_state == "fading_in":
+            if time_since_change < self.hint_fade_duration:
+                self.hint_alpha = int(255 * (time_since_change / self.hint_fade_duration))
+            else:
+                self.hint_alpha = 255
+                self.hint_state = "visible"
+                self.hint_visible_start_time = current_time # Record when it became fully visible
+        elif self.hint_state == "visible":
+            time_visible = current_time - self.hint_visible_start_time
+            if time_visible >= self.hint_display_duration:
+                self.hint_state = "fading_out"
+                self.last_hint_time = current_time # Reset timer for fade out start
+        elif self.hint_state == "fading_out":
+            time_fading = current_time - self.last_hint_time
+            if time_fading < self.hint_fade_duration:
+                 self.hint_alpha = int(255 * (1 - (time_fading / self.hint_fade_duration)))
+            else:
+                self.hint_alpha = 0
+                # Change hint and start fading in the new one
+                self.current_hint = random.choice(self.hints)
+                self.hint_state = "fading_in"
+                self.last_hint_time = current_time # Reset timer for fade in start
+
+        self.hint_alpha = max(0, min(255, self.hint_alpha)) # Clamp alpha
+
+
     def draw_hint(self, surface):
+        if self.hint_alpha <= 0: return # Don't draw if fully faded out
+
         try:
-            # Draw natural looking hint box at bottom of screen
-            hint_width = len(self.current_hint) * 7 + 80  # Approximate width based on text length
-            hint_height = 40
-            hint_x = SCREEN_WIDTH // 2 - hint_width // 2
-           
-            # Position at bottom of screen, above any other elements
-            hint_y = SCREEN_HEIGHT - 15 - hint_height
-            if self.stats.total_items > 0:
-                # If we have stats showing, position it above the impact card
-                hint_y = SCREEN_HEIGHT - 90 - 15 - hint_height
-           
-            # Create hint box with natural paper texture
-            hint_back = pygame.Surface((hint_width, hint_height), pygame.SRCALPHA)
-            hint_back.fill((*CREAM[:3], int(220 * (self.hint_alpha / 255))))
-           
-            # Add subtle paper texture
-            for y in range(0, hint_height, 3):
-                line_alpha = random.randint(5, 15)
-                line_color = (*SOFT_BROWN, line_alpha * (self.hint_alpha / 255))
-                pygame.draw.line(hint_back, line_color, (10, y), (hint_width - 10, y), 1)
-           
-            # Add border
-            border_color = (*WOOD_BROWN, int(self.hint_alpha * 0.8))
-            pygame.draw.rect(hint_back, border_color, (0, 0, hint_width, hint_height), 2, border_radius=10)
-           
-            # Leaf decorations at corners
-            leaf_size = 10
-            for corner in [(10, 10), (hint_width - 10, 10), (10, hint_height - 10), (hint_width - 10, hint_height - 10)]:
-                x, y = corner
-                leaf_color = (*LEAF_GREEN, int(180 * (self.hint_alpha / 255)))
-               
-                # Simple leaf
-                pygame.draw.ellipse(hint_back, leaf_color, (x - leaf_size//2, y - leaf_size//2, leaf_size, leaf_size))
-           
-            surface.blit(hint_back, (hint_x, hint_y))
-           
-            # Hint text
             hint_surf = font_small.render(self.current_hint, True, TEXT_BROWN)
+            hint_rect = hint_surf.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 45)) # Position near bottom center
+
+            # Dynamic background based on text size
+            bg_rect = hint_rect.inflate(30, 15)
+            hint_back = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
+
+            # Background color with alpha
+            bg_color_alpha = (*CREAM[:3], int(200 * (self.hint_alpha / 255)))
+            pygame.draw.rect(hint_back, bg_color_alpha, hint_back.get_rect(), border_radius=10)
+
+             # Border with alpha
+            border_color_alpha = (*WOOD_BROWN[:3], int(220 * (self.hint_alpha / 255)))
+            pygame.draw.rect(hint_back, border_color_alpha, hint_back.get_rect(), 2, border_radius=10)
+
+            # Blit background first
+            surface.blit(hint_back, bg_rect.topleft)
+
+            # Blit text with alpha
             hint_surf.set_alpha(self.hint_alpha)
-            hint_rect = hint_surf.get_rect(center=(SCREEN_WIDTH // 2, hint_y + hint_height // 2))
             surface.blit(hint_surf, hint_rect)
-        except pygame.error:
-            # Handle rendering errors
-            pass
-       
+
+        except pygame.error as e:
+             print(f"Warning: Error drawing hint: {e}")
+
+
     def process_camera_detection(self, detection_data):
-        """Process detection data from the camera thread"""
-        if self.state == "idle":
-            print(f"Processing camera detection: {detection_data}")
+        """Process detection data received from the external camera process"""
+        if self.state == "idle" and isinstance(detection_data, dict):
             item_name = detection_data.get("name", "Unknown Item")
-            item_type = detection_data.get("type", "RECYCLING")
+            item_type = detection_data.get("type", "TRASH") # Default to TRASH if type missing
+
+            # Validate type
+            if item_type.upper() not in ["RECYCLING", "TRASH"]:
+                 print(f"Warning: Received invalid item type '{item_type}'. Defaulting to TRASH.")
+                 item_type = "TRASH"
+
+            print(f"GUI: Received detection - Item: {item_name}, Type: {item_type}")
             self.detection_animation = DetectionAnimation(item_name, item_type)
             self.state = "detecting"
-           
+        elif not isinstance(detection_data, dict):
+            print(f"Warning: Received invalid detection data format: {type(detection_data)}")
+
+
     def update_detection(self):
         try:
-            # Check for new detection from camera
-            if not detection_queue.empty() and self.state == "idle":
-                detection_data = detection_queue.get()
-                self.process_camera_detection(detection_data)
-           
-            # Update current detection animation
+            # Check queue for new data ONLY IF idle
+            if self.state == "idle":
+                 if not detection_queue.empty():
+                    detection_data = detection_queue.get()
+                    self.process_camera_detection(detection_data)
+                    detection_queue.task_done() # Mark task as done
+
+            # Update ongoing animation
             if self.detection_animation:
-                timed_out = self.detection_animation.update()
-               
+                animation_finished = self.detection_animation.update()
+
+                # Update BinStats when animation reaches feedback phase (and hasn't already)
                 if self.detection_animation.phase == "feedback" and not self.detection_animation.stats_updated:
+                    # Ensure stats are updated only once per animation
                     self.stats.update_stats(self.detection_animation.item_type)
-                   
-                    # Guard against division by zero
+                    print(f"GUI: Stats updated for {self.detection_animation.item_name}")
+
+                    # Update progress bars based on new stats
                     if self.stats.total_items > 0:
                         recycling_percentage = self.stats.get_recycling_percentage()
                         self.recycling_progress.set_value(recycling_percentage)
                         self.landfill_progress.set_value(100 - recycling_percentage)
-                   
-                    self.detection_animation.stats_updated = True
-                   
-                if timed_out:
+                        print(f"GUI: Progress bars updated - Rec: {recycling_percentage:.1f}%, Land: {100-recycling_percentage:.1f}%")
+                    else:
+                        self.recycling_progress.set_value(0)
+                        self.landfill_progress.set_value(0)
+
+                    self.detection_animation.stats_updated = True # Mark as updated
+
+
+                # If animation update() returns True, it's finished
+                if animation_finished:
+                    print("GUI: Detection animation finished.")
                     self.detection_animation = None
-                    self.state = "idle"
+                    self.state = "idle" # Return to idle state
+
+        except queue.Empty:
+             pass # Normal if queue is empty
         except Exception as e:
-            # Recover from any unexpected errors in detection
             print(f"Error in update_detection: {e}")
+            # Attempt to recover gracefully
             self.detection_animation = None
             self.state = "idle"
-               
+
+
     def draw_detection(self, surface):
         try:
             if self.detection_animation:
-                # Natural-looking background panel for detection area
-                if self.detection_animation.phase in ["scanning", "revealing", "feedback"]:
-                    panel_width = 500
-                    panel_height = 300
-                    panel_x = SCREEN_WIDTH // 2 - panel_width // 2
-                    panel_y = SCREEN_HEIGHT // 2 - panel_height // 2
-                   
-                    # Panel with natural texture
-                    panel = pygame.Surface((panel_width, panel_height), pygame.SRCALPHA)
-                    panel.fill((*CREAM, 200))
-                   
-                    # Add texture
-                    for y in range(0, panel_height, 3):
-                        if random.random() < 0.7:
-                            texture_alpha = random.randint(5, 15)
-                            texture_width = random.randint(panel_width - 60, panel_width)
-                            texture_x = random.randint(0, 60)
-                            texture_line = pygame.Surface((texture_width, 1), pygame.SRCALPHA)
-                            texture_line.fill((*SOFT_BROWN, texture_alpha))
-                            panel.blit(texture_line, (texture_x, y))
-                   
-                    # Border with subtle decorative elements
-                    pygame.draw.rect(panel, WOOD_BROWN, (0, 0, panel_width, panel_height), 3, border_radius=20)
-                   
-                    # Nature decorations at corners
-                    for corner in [(20, 20), (panel_width - 20, 20), (20, panel_height - 20), (panel_width - 20, panel_height - 20)]:
-                        x, y = corner
-                        if self.detection_animation.item_type.upper() == "RECYCLING":
-                            # Draw leaf
-                            leaf_size = 15
-                            pygame.draw.ellipse(panel, LEAF_GREEN, (x - leaf_size, y - leaf_size//2, leaf_size * 2, leaf_size))
-                        else:
-                            # Draw water drop
-                            drop_size = 15
-                            drop_points = [
-                                (x, y - drop_size),
-                                (x + drop_size, y),
-                                (x, y + drop_size),
-                                (x - drop_size, y)
-                            ]
-                            pygame.draw.polygon(panel, WATER_BLUE, drop_points)
-                   
-                    # Show feedback buttons only when in feedback phase
-                    if self.detection_animation.phase == "feedback":
-                        surface.blit(panel, (panel_x, panel_y))
-                       
-                        # Draw buttons on top of the panel
-                        self.correct_button.draw(surface)
-                        self.incorrect_button.draw(surface)
-                       
-                        # Add leaf/drop decorations to buttons based on item type
-                        if self.detection_animation.item_type.upper() == "RECYCLING":
-                            # Draw leaf near correct button
-                            leaf_size = 20
-                            leaf_surf = pygame.Surface((leaf_size * 2, leaf_size), pygame.SRCALPHA)
-                            pygame.draw.ellipse(leaf_surf, LEAF_GREEN, (0, 0, leaf_size * 1.5, leaf_size))
-                            leaf_rect = leaf_surf.get_rect(center=(self.correct_button.rect.left - 15, self.correct_button.rect.centery))
-                            surface.blit(leaf_surf, leaf_rect)
-                        else:
-                            # Draw drop near incorrect button
-                            drop_size = 15
-                            drop_surf = pygame.Surface((drop_size, drop_size * 1.5), pygame.SRCALPHA)
-                            drop_points = [
-                                (drop_size/2, 0),
-                                (drop_size, drop_size),
-                                (drop_size/2, drop_size * 1.5),
-                                (0, drop_size)
-                            ]
-                            pygame.draw.polygon(drop_surf, WATER_BLUE, drop_points)
-                            drop_rect = drop_surf.get_rect(center=(self.incorrect_button.rect.left - 15, self.incorrect_button.rect.centery))
-                            surface.blit(drop_surf, drop_rect)
-                       
-                        # Draw the detection animation on top
-                        self.detection_animation.draw(surface)
-                    else:
-                        # For other phases, draw the panel first, then the animation
-                        surface.blit(panel, (panel_x, panel_y))
-                        self.detection_animation.draw(surface)
-                else:
-                    # For dropping phase, just draw the animation
-                    self.detection_animation.draw(surface)
-        except pygame.error:
-            # Handle rendering errors
-            pass
-               
+                # Draw a semi-transparent overlay during detection to focus attention
+                overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                overlay_alpha = 100 # Adjust transparency
+                if self.detection_animation.phase == "dropping":
+                     overlay_alpha = int(100 * (self.detection_animation.y_pos / self.detection_animation.target_y)) if self.detection_animation.target_y > 0 else 0
+                elif self.detection_animation.phase == "scanning":
+                     overlay_alpha = 100 + int(50 * (self.detection_animation.scan_progress / 100)) # Darken during scan
+                elif self.detection_animation.phase == "revealing":
+                     overlay_alpha = 150 + int(105 * (self.detection_animation.reveal_alpha / 255)) # Darkest during reveal/feedback
+                elif self.detection_animation.phase == "feedback":
+                    overlay_alpha = 200
+
+                overlay.fill((0, 0, 0, max(0, min(200, overlay_alpha)))) # Black overlay
+                surface.blit(overlay, (0, 0))
+
+
+                # Draw the animation itself
+                self.detection_animation.draw(surface)
+
+                # Draw feedback buttons ONLY during the feedback phase
+                if self.detection_animation.phase == "feedback":
+                    self.correct_button.draw(surface)
+                    self.incorrect_button.draw(surface)
+
+        except (pygame.error, AttributeError) as e:
+            # Handle rendering errors gracefully
+            print(f"Warning: Error drawing detection overlay/animation: {e}")
+            # Don't crash, maybe skip drawing this frame for detection elements
+
+
     def handle_button_clicks(self, mouse_pos):
-        try:
-            if self.state == "detecting" and self.detection_animation and self.detection_animation.phase == "feedback":
-                if self.correct_button.check_hover(mouse_pos) and pygame.mouse.get_pressed()[0]:
-                    self.correct_button.clicked()
+        clicked = False
+        # Only handle clicks if in feedback state and animation exists
+        if self.state == "detecting" and self.detection_animation and self.detection_animation.phase == "feedback":
+            # Use get_pressed()[0] for left mouse button click event
+            if pygame.mouse.get_pressed()[0]:
+                if self.correct_button.check_hover(mouse_pos):
+                    if self.correct_button.clicked(): # clicked() returns True
+                         # TODO: Optionally send feedback ('correct') back to the detection script via network/queue
+                        print("Feedback: Correct")
+                        clicked = True
+                elif self.incorrect_button.check_hover(mouse_pos):
+                     if self.incorrect_button.clicked():
+                         # TODO: Optionally send feedback ('incorrect') back to the detection script
+                         print("Feedback: Incorrect")
+                         clicked = True
+
+                # If a button was clicked, reset the state immediately
+                if clicked:
                     self.detection_animation = None
                     self.state = "idle"
-                    return True
-                elif self.incorrect_button.check_hover(mouse_pos) and pygame.mouse.get_pressed()[0]:
-                    self.incorrect_button.clicked()
-                    self.detection_animation = None
-                    self.state = "idle"
-                    return True
-            return False
-        except (AttributeError, TypeError):
-            # Handle errors in mouse interaction
-            self.detection_animation = None
-            self.state = "idle"
-            return True
-       
+                    # Debounce: Ensure click isn't processed multiple times
+                    pygame.time.wait(100) # Small delay after click processing
+
+        return clicked # Return whether a click was handled
+
+
     def check_button_hover(self, mouse_pos):
+        # Update hover state for buttons only when they are potentially visible
         if self.state == "detecting" and self.detection_animation and self.detection_animation.phase == "feedback":
             try:
                 self.correct_button.check_hover(mouse_pos)
                 self.incorrect_button.check_hover(mouse_pos)
-            except (AttributeError, TypeError):
-                # Handle errors in button hover check
-                pass
+            except (AttributeError, TypeError) as e:
+                 print(f"Warning: Error checking button hover state: {e}")
+        else:
+            # Ensure buttons are not marked as hovered when not visible
+            self.correct_button.hovered = False
+            self.incorrect_button.hovered = False
 
-# Draw natural, earthy background
+
+# Draw natural, earthy background (Unchanged, graphical)
 def draw_background(surface):
     try:
-        # Create a subtle gradient from top to bottom
+        # Subtle vertical gradient
         for y in range(SCREEN_HEIGHT):
             ratio = y / SCREEN_HEIGHT
             r = int(LIGHT_CREAM[0] * (1 - ratio) + CREAM[0] * ratio)
             g = int(LIGHT_CREAM[1] * (1 - ratio) + CREAM[1] * ratio)
             b = int(LIGHT_CREAM[2] * (1 - ratio) + CREAM[2] * ratio)
             pygame.draw.line(surface, (r, g, b), (0, y), (SCREEN_WIDTH, y))
-       
-        # Add subtle natural pattern
-        for x in range(0, SCREEN_WIDTH, 40):
-            for y in range(0, SCREEN_HEIGHT, 40):
-                pattern_type = (x + y) % 3
-               
-                if pattern_type == 0 and random.random() < 0.3:
-                    # Draw tiny leaf
-                    leaf_size = random.randint(3, 6)
-                    leaf_alpha = random.randint(5, 15)
-                    leaf_surf = pygame.Surface((leaf_size * 2, leaf_size), pygame.SRCALPHA)
-                    pygame.draw.ellipse(leaf_surf, (*LEAF_GREEN, leaf_alpha),
-                                    (0, 0, leaf_size * 1.5, leaf_size))
-                    leaf_rect = leaf_surf.get_rect(center=(x + random.randint(-10, 10), y + random.randint(-10, 10)))
-                    surface.blit(leaf_surf, leaf_rect)
-                   
-                elif pattern_type == 1 and random.random() < 0.2:
-                    # Draw tiny drop
-                    drop_size = random.randint(2, 5)
-                    drop_alpha = random.randint(5, 15)
-                    drop_surf = pygame.Surface((drop_size, drop_size * 1.5), pygame.SRCALPHA)
-                    drop_points = [
-                        (drop_size/2, 0),
-                        (drop_size, drop_size),
-                        (drop_size/2, drop_size * 1.5),
-                        (0, drop_size)
-                    ]
-                    pygame.draw.polygon(drop_surf, (*WATER_BLUE, drop_alpha), drop_points)
-                    drop_rect = drop_surf.get_rect(center=(x + random.randint(-10, 10), y + random.randint(-10, 10)))
-                    surface.blit(drop_surf, drop_rect)
-                   
-                elif pattern_type == 2 and random.random() < 0.15:
-                    # Draw tiny recycling symbol
-                    symbol_size = random.randint(3, 6)
-                    symbol_alpha = random.randint(5, 15)
-                    symbol_surf = pygame.Surface((symbol_size * 2, symbol_size * 2), pygame.SRCALPHA)
-                   
-                    # Simplified recycling arrows
-                    center_x = symbol_size
-                    center_y = symbol_size
-                    for i in range(3):
-                        angle = math.radians(i * 120)
-                        x1 = center_x + symbol_size * 0.8 * math.cos(angle)
-                        y1 = center_y + symbol_size * 0.8 * math.sin(angle)
-                        x2 = center_x + symbol_size * 0.8 * math.cos(angle + math.radians(120))
-                        y2 = center_y + symbol_size * 0.8 * math.sin(angle + math.radians(120))
-                        pygame.draw.line(symbol_surf, (*DARK_GREEN, symbol_alpha), (x1, y1), (x2, y2), 1)
-                   
-                    symbol_rect = symbol_surf.get_rect(center=(x + random.randint(-10, 10), y + random.randint(-10, 10)))
-                    surface.blit(symbol_surf, symbol_rect)
-    except pygame.error:
-        # Handle rendering errors for background
-        surface.fill(CREAM)  # Fallback to simple background
 
-# Draw natural, eco-friendly header
+        # Optional: Add very subtle pattern overlay (can impact performance)
+        # pattern_surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        # for _ in range(50): # Draw fewer elements
+        #     x, y = random.randint(0, SCREEN_WIDTH), random.randint(0, SCREEN_HEIGHT)
+        #     size = random.randint(2, 4)
+        #     alpha = random.randint(3, 8)
+        #     color = random.choice([(*LEAF_GREEN[:3], alpha), (*WATER_BLUE[:3], alpha), (*SOFT_BROWN[:3], alpha)])
+        #     pygame.draw.circle(pattern_surf, color, (x, y), size)
+        # surface.blit(pattern_surf, (0,0))
+
+    except pygame.error as e:
+        print(f"Warning: Error drawing background: {e}")
+        surface.fill(CREAM) # Fallback
+
+
+# Draw natural, eco-friendly header (Unchanged, graphical)
 def draw_header(surface):
     try:
-        # Natural wood-like header background
-        header_height = 70
+        header_height = 65 # Slightly smaller header
         header_rect = pygame.Rect(0, 0, SCREEN_WIDTH, header_height)
+        # Background with wood texture
         pygame.draw.rect(surface, CREAM, header_rect)
-       
-        # Add wood grain texture
-        for y in range(0, header_height, 2):
-            grain_width = random.randint(SCREEN_WIDTH - 100, SCREEN_WIDTH)
-            grain_x = random.randint(0, 100)
-            grain_alpha = random.randint(5, 15)
-            grain_line = pygame.Surface((grain_width, 1), pygame.SRCALPHA)
-            grain_line.fill((*SOFT_BROWN, grain_alpha))
-            surface.blit(grain_line, (grain_x, y))
-       
-        # Add natural border at the bottom
-        border_height = 3
-        border_rect = pygame.Rect(0, header_height - border_height, SCREEN_WIDTH, border_height)
-        pygame.draw.rect(surface, WOOD_BROWN, border_rect)
-       
-        # Title with natural styling
+        for y in range(0, header_height, 3):
+             grain_width = random.randint(int(SCREEN_WIDTH * 0.8), SCREEN_WIDTH)
+             grain_x = random.randint(0, int(SCREEN_WIDTH * 0.2))
+             grain_alpha = random.randint(8, 18)
+             grain_line = pygame.Surface((grain_width, 1), pygame.SRCALPHA)
+             grain_line.fill((*SOFT_BROWN[:3], grain_alpha))
+             surface.blit(grain_line, (grain_x, y))
+        # Bottom border line
+        pygame.draw.rect(surface, WOOD_BROWN, (0, header_height - 2, SCREEN_WIDTH, 2))
+
+        # Title Text
         title_text = font_title.render("SmartBin™ Waste Management", True, TEXT_BROWN)
         title_rect = title_text.get_rect(center=(SCREEN_WIDTH//2, header_height//2))
         surface.blit(title_text, title_rect)
-       
-        # Add leaf decorations around title
-        leaf_positions = [
-            (title_rect.left - 40, title_rect.centery - 5),
-            (title_rect.right + 40, title_rect.centery - 5)
-        ]
-       
-        for pos in leaf_positions:
-            leaf_size = 20
-            leaf_surf = pygame.Surface((leaf_size * 2, leaf_size), pygame.SRCALPHA)
-            pygame.draw.ellipse(leaf_surf, LEAF_GREEN, (0, 0, leaf_size * 1.5, leaf_size))
-           
-            # Add stem
-            pygame.draw.line(leaf_surf, DARK_GREEN, (leaf_size * 0.75, leaf_size/2), (leaf_size * 1.5, leaf_size/2), 2)
-           
-            # Mirror the second leaf
-            if pos[0] > SCREEN_WIDTH//2:
-                leaf_surf = pygame.transform.flip(leaf_surf, True, False)
-               
-            leaf_rect = leaf_surf.get_rect(center=pos)
-            surface.blit(leaf_surf, leaf_rect)
-       
-        # Add small recycling symbol
-        symbol_size = 25
-        symbol_x = title_rect.right + 70
-        symbol_y = title_rect.centery
-       
-        # Draw a circular arrow
-        symbol_surf = pygame.Surface((symbol_size, symbol_size), pygame.SRCALPHA)
-        pygame.draw.circle(symbol_surf, DARK_GREEN, (symbol_size//2, symbol_size//2), symbol_size//2, 2)
-       
-        # Add arrow tips
-        arrow_points = [
-            (symbol_size//2, 0),
-            (symbol_size//2 + symbol_size//10, symbol_size//10),
-            (symbol_size//2 - symbol_size//10, symbol_size//10)
-        ]
-        pygame.draw.polygon(symbol_surf, DARK_GREEN, arrow_points)
-       
-        # Rotate and position
-        rotated_symbol = pygame.transform.rotate(symbol_surf, -30)
-        symbol_rect = rotated_symbol.get_rect(center=(symbol_x, symbol_y))
-        surface.blit(rotated_symbol, symbol_rect)
-    except pygame.error:
-        # Handle rendering errors for header
-        # Simple fallback header
-        pygame.draw.rect(surface, CREAM, (0, 0, SCREEN_WIDTH, 70))
-        try:
-            title_text = font_title.render("SmartBin™ Waste Management", True, TEXT_BROWN)
-            surface.blit(title_text, (SCREEN_WIDTH//2 - title_text.get_width()//2, 20))
-        except Exception:
-            pass
+
+        # Leaf Decorations
+        leaf_size = 18
+        leaf_surf = pygame.Surface((leaf_size * 1.5, leaf_size), pygame.SRCALPHA)
+        pygame.draw.ellipse(leaf_surf, LEAF_GREEN, (0, 0, leaf_size * 1.5, leaf_size))
+        pygame.draw.line(leaf_surf, DARK_GREEN, (leaf_size * 0.5, leaf_size / 2), (leaf_size * 1.5, leaf_size / 2), 2) # Stem
+
+        leaf_left_rect = leaf_surf.get_rect(center=(title_rect.left - 30, title_rect.centery))
+        surface.blit(leaf_surf, leaf_left_rect)
+
+        leaf_right_surf = pygame.transform.flip(leaf_surf, True, False) # Flip for right side
+        leaf_right_rect = leaf_right_surf.get_rect(center=(title_rect.right + 30, title_rect.centery))
+        surface.blit(leaf_right_surf, leaf_right_rect)
+
+    except pygame.error as e:
+        print(f"Warning: Error drawing header: {e}")
+        # Minimal fallback header
+        pygame.draw.rect(surface, CREAM, (0, 0, SCREEN_WIDTH, 65))
+        pygame.draw.line(surface, WOOD_BROWN, (0, 63), (SCREEN_WIDTH, 63), 2)
+
+
+# --- SIMULATION FUNCTION (for testing GUI without external process) ---
+def simulate_detection(queue):
+    """Puts a simulated detection event into the queue."""
+    items = [
+        {"name": "Plastic Bottle", "type": "RECYCLING"},
+        {"name": "Apple Core", "type": "TRASH"},
+        {"name": "Aluminum Can", "type": "RECYCLING"},
+        {"name": "Paper Towel", "type": "TRASH"},
+        {"name": "Newspaper", "type": "RECYCLING"},
+        {"name": "Coffee Cup", "type": "TRASH"}, # Often coated, not recyclable
+        {"name": "Glass Jar", "type": "RECYCLING"},
+    ]
+    chosen_item = random.choice(items)
+    print(f"\n--- SIMULATING DETECTION: {chosen_item['name']} ({chosen_item['type']}) ---")
+    queue.put(chosen_item)
+
 
 # Main function
 def main():
     try:
-        # Initialize the SmartBin interface
         interface = SmartBinInterface()
         clock = pygame.time.Clock()
         running = True
-       
-        # Initialize serial connection
-        serial_initialized = initialize_serial()
-        if not serial_initialized:
-            print("Warning: Proceeding without Arduino communication.")
-       
-        # Start the camera detection thread
-        camera_thread = threading.Thread(target=camera_detection_thread, daemon=True)
-        camera_thread.start()
-        print("Camera detection thread started.")
-       
-        # Main game loop
+
+        # --- Removed Serial Initialization ---
+        # --- Removed Camera Thread Start ---
+        print("GUI Initialized. Waiting for detection data...")
+        print("Press 'D' to simulate a detection event.")
+
+        last_update_time = time.time()
+
         while running:
-            try:
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
+            # --- Event Handling ---
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
                         running = False
-                    elif event.type == pygame.KEYDOWN:
-                        if event.key == pygame.K_ESCAPE:
-                            running = False
-                           
-                # Handle mouse interactions
-                mouse_pos = pygame.mouse.get_pos()
-                if not interface.handle_button_clicks(mouse_pos):
-                    interface.check_button_hover(mouse_pos)
-                   
-                # Update all components
-                interface.update_nature_elements()
-                interface.update_progress_bars()
-                interface.update_hint()
-                interface.update_detection()
-               
-                # Draw everything
+                    # --- Simulation Trigger ---
+                    if event.key == pygame.K_d:
+                         if interface.state == "idle": # Only simulate if idle
+                             simulate_detection(detection_queue)
+                         else:
+                             print("Simulation ignored: Detection already in progress.")
+                # Handle mouse clicks specifically here
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                     if event.button == 1: # Left mouse button
+                         mouse_pos = pygame.mouse.get_pos()
+                         interface.handle_button_clicks(mouse_pos) # Let interface handle logic
+
+
+            # --- Updates ---
+            current_time = time.time()
+            delta_time = current_time - last_update_time
+            last_update_time = current_time
+
+            mouse_pos = pygame.mouse.get_pos() # Get mouse pos once per frame
+            interface.check_button_hover(mouse_pos) # Update hover states
+
+            interface.update_nature_elements()
+            interface.update_progress_bars()
+            interface.update_hint()
+            interface.update_detection() # Checks queue and updates animation/state
+
+            # --- Drawing ---
+            try:
+                draw_background(screen)
+                interface.draw_nature_elements(screen) # Draw background elements first
+                draw_header(screen)
+
+                # Draw main content based on state
+                if interface.state == "idle":
+                    interface.draw_progress_bars(screen)
+                    # Draw hint only when idle and not during button feedback time
+                    if not (interface.correct_button.animation > 0 or interface.incorrect_button.animation > 0):
+                         interface.draw_hint(screen)
+                else: # "detecting" state
+                    interface.draw_detection(screen) # Draws overlay, animation, and buttons
+
+            except Exception as draw_err:
+                print(f"Critical error during drawing: {draw_err}")
+                # Simple fallback display to avoid crash loop
+                screen.fill(CREAM)
                 try:
-                    draw_background(screen)
-                    interface.draw_nature_elements(screen)
-                    draw_header(screen)
-                   
-                    if interface.state == "idle":
-                        interface.draw_progress_bars(screen)
-                        interface.draw_hint(screen)
-                    else:
-                        interface.draw_detection(screen)
-                except Exception as e:
-                    # If rendering fails, try to recover with minimum display
-                    print(f"Rendering error: {e}")
-                    screen.fill(CREAM)  # Fallback background color
-                   
-                pygame.display.update()
-                clock.tick(60)
-            except Exception as e:
-                # Catch-all for loop errors to prevent crashes
-                print(f"Error in main loop: {e}")
-                # Try to continue running
-               
-        # Clean up before exit
-        camera_active = False
-        if camera_thread.is_alive():
-            print("Waiting for camera thread to terminate...")
-            camera_thread.join(timeout=2.0)
-           
-        if ser and ser.is_open:
-            ser.close()
-            print("Serial connection closed.")
-           
+                    err_font = pygame.font.SysFont("Arial", 20)
+                    err_text = err_font.render("Drawing Error Occurred", True, BLACK)
+                    screen.blit(err_text, (50, 50))
+                except: pass # Ignore errors during error display
+
+            pygame.display.flip() # Use flip instead of update for full screen redraws
+            clock.tick(60) # Limit frame rate
+
+
+    except Exception as main_err:
+        print(f"Critical error in main loop: {main_err}")
+    finally:
+        # --- Cleanup ---
+        print("Shutting down Pygame...")
         pygame.quit()
-        cv2.destroyAllWindows()
         print("Application terminated.")
         sys.exit()
-    except Exception as e:
-        # Catch-all for critical errors
-        print(f"Critical error: {e}")
-        pygame.quit()
-        cv2.destroyAllWindows()
-        sys.exit()
+
 
 if __name__ == "__main__":
     main()
