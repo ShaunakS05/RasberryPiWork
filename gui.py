@@ -97,7 +97,7 @@ class NatureElement: # (Unchanged)
                 drop_surf = pygame.Surface((self.size * 2, self.size * 3), pygame.SRCALPHA); drop_color = (*WATER_BLUE[:3], 150); pygame.draw.circle(drop_surf, drop_color, (self.size, self.size), self.size); points = [(self.size - self.size/2, self.size), (self.size + self.size/2, self.size), (self.size, self.size * 2.5)]; pygame.draw.polygon(drop_surf, drop_color, points); highlight_pos = (int(self.size * 0.7), int(self.size * 0.7)); highlight_radius = max(1, int(self.size / 3)); highlight_color = (*LIGHT_BLUE[:3], 180); pygame.draw.circle(drop_surf, highlight_color, highlight_pos, highlight_radius); rotated_drop = pygame.transform.rotate(drop_surf, self.rotation / 10); drop_rect = rotated_drop.get_rect(center=(int(self.x), int(self.y))); surface.blit(rotated_drop, drop_rect)
         except (pygame.error, TypeError, ValueError) as e: print(f"Warning: Error drawing nature element: {e}"); self.reset()
 
-class NaturalProgressBar: # (Unchanged, assuming Pygame 1.9.x compatibility)
+class NaturalProgressBar: # (Unchanged)
     def __init__(self, x, y, width, height, color, bg_color, max_value=100, style="plant"):
         self.x = x; self.y = y; self.width = width; self.height = height; self.color = color; self.bg_color = bg_color; self.max_value = max_value
         self.current_value = 0; self.target_value = 0; self.animation_speed = 2; self.style = style
@@ -152,7 +152,7 @@ class NaturalProgressBar: # (Unchanged, assuming Pygame 1.9.x compatibility)
                 wave_points.append((self.width, wave_height_amp * 2)); pygame.draw.polygon(wave_surface, lighter_color, wave_points); surface.blit(wave_surface, (self.x, wave_y_base))
             except pygame.error as wave_err: print(f"Warning: Error drawing wave: {wave_err}")
 
-class EcoButton: # (Unchanged, assuming Pygame 1.9.x compatibility)
+class EcoButton: # (Unchanged)
     def __init__(self, x, y, width, height, text, color, hover_color, text_color=WHITE, border_radius=10): # border_radius unused visually
         self.rect = pygame.Rect(x, y, width, height); self.text = text; self.color = color; self.hover_color = hover_color; self.text_color = text_color; self.hovered = False
         self.animation = 0
@@ -160,7 +160,6 @@ class EcoButton: # (Unchanged, assuming Pygame 1.9.x compatibility)
         try:
             current_color = self.hover_color if self.hovered else self.color
             if self.animation > 0: self.animation -= 0.1; feedback_color = tuple(max(0, c - 30) for c in current_color[:3]); current_color = feedback_color
-            # Simplified drawing - removing border_radius logic as it wasn't used
             pygame.draw.rect(surface, current_color, self.rect)
             highlight_rect = pygame.Rect(self.rect.x + 5, self.rect.y + 3, self.rect.width - 10, self.rect.height // 4); highlight_color = (*WHITE[:3], 30)
             pygame.draw.rect(surface, highlight_color, highlight_rect)
@@ -172,7 +171,7 @@ class EcoButton: # (Unchanged, assuming Pygame 1.9.x compatibility)
         return False
     def clicked(self): self.animation = 1.0; print(f"Button '{self.text}' clicked."); return True
 
-class DetectionAnimation: # (Unchanged, assuming Pygame 1.9.x compatibility)
+class DetectionAnimation: # (Unchanged)
     def __init__(self, item_name, item_type):
         self.item_name = item_name.upper(); self.item_type = item_type.upper(); self.start_time = time.time(); self.phase = "dropping"; self.phase_durations = {"dropping": 1.2, "scanning": 2.0, "revealing": 1.5, "feedback": 4.0}
         self.total_duration = sum(self.phase_durations.values()); self.stats_updated = False; self.scan_progress = 0; self.reveal_alpha = 0; self.particle_effects = []
@@ -249,14 +248,20 @@ class DetectionAnimation: # (Unchanged, assuming Pygame 1.9.x compatibility)
                 type_bg_rect = type_rect.inflate(15, 8); type_bg_surf = pygame.Surface(type_bg_rect.size, pygame.SRCALPHA); type_bg_surf.fill((*CREAM[:3], int(160 * (self.reveal_alpha / 255)))); pygame.draw.rect(type_bg_surf, (*WOOD_BROWN[:3], int(180 * (self.reveal_alpha / 255))), type_bg_surf.get_rect(), 1) # Border, no BR
                 surface.blit(type_bg_surf, type_bg_rect.topleft); surface.blit(type_surf, type_rect)
                 if self.phase == "feedback":
-                    time_left = max(0, self.total_duration - (time.time() - self.start_time)); prompt_text = f"Is this correct? ({int(time_left)}s)"; prompt_surf = font_medium.render(prompt_text, True, TEXT_BROWN); prompt_rect = prompt_surf.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 150)) # Position above buttons (Adjust if buttons move significantly)
+                    # Position prompt relative to buttons (consider button_y)
+                    prompt_y_offset = 40 # How much space above the buttons
+                    prompt_center_y = self.correct_button.rect.top - prompt_y_offset # Center it above button top
+
+                    time_left = max(0, self.total_duration - (time.time() - self.start_time)); prompt_text = f"Is this correct? ({int(time_left)}s)"; prompt_surf = font_medium.render(prompt_text, True, TEXT_BROWN);
+                    prompt_rect = prompt_surf.get_rect(center=(SCREEN_WIDTH // 2, prompt_center_y)) # Centered X, Y above buttons
+
                     prompt_bg_rect = prompt_rect.inflate(20, 10); prompt_bg_surf = pygame.Surface(prompt_bg_rect.size, pygame.SRCALPHA); prompt_bg_surf.fill((*LIGHT_CREAM[:3], 190)); pygame.draw.rect(prompt_bg_surf, WOOD_BROWN, prompt_bg_surf.get_rect(), 2) # Border, no BR
                     surface.blit(prompt_bg_surf, prompt_bg_rect.topleft); surface.blit(prompt_surf, prompt_rect)
             self.draw_particles(surface)
         except (pygame.error, TypeError, ValueError, ZeroDivisionError, AttributeError) as e: print(f"Warning: Error drawing detection animation phase '{self.phase}': {e}"); self.phase = "feedback"; self.start_time = time.time() - self.total_duration
 
 class SmartBinInterface:
-    # <<< --- START OF MODIFIED __init__ (with smaller buttons) --- >>>
+    # <<< --- START OF MODIFIED __init__ (Swapped Progress Bars & Smaller Buttons) --- >>>
     def __init__(self):
         self.stats = BinStats()
         self.nature_elements = [NatureElement() for _ in range(15)]
@@ -264,7 +269,7 @@ class SmartBinInterface:
         self.detection_animation = None
 
         # --- Calculate sizes based on fullscreen dimensions ---
-        # Progress bar dimensions (Unchanged)
+        # Progress bar dimensions
         pb_rel_height = 0.55
         pb_rel_width = 0.2
         pb_height = int(SCREEN_HEIGHT * pb_rel_height)
@@ -272,30 +277,33 @@ class SmartBinInterface:
         pb_y_offset = 40
         pb_y = (SCREEN_HEIGHT // 2) - (pb_height // 2) + pb_y_offset
         pb_x_margin = int(SCREEN_WIDTH * 0.08)
-        recycling_pb_x = (SCREEN_WIDTH // 2) - pb_x_margin - pb_width
-        landfill_pb_x = (SCREEN_WIDTH // 2) + pb_x_margin
 
-        # Instantiate progress bars (Unchanged)
-        self.recycling_progress = NaturalProgressBar(
-            recycling_pb_x, pb_y, pb_width, pb_height,
-            LEAF_GREEN, LIGHT_CREAM, style="plant"
-        )
+        # **** SWAPPED POSITIONS ****
+        landfill_pb_x = (SCREEN_WIDTH // 2) - pb_x_margin - pb_width  # Landfill on Left
+        recycling_pb_x = (SCREEN_WIDTH // 2) + pb_x_margin           # Recycling on Right
+        # **************************
+
+        # **** Instantiate progress bars with SWAPPED positions, styles, and colors ****
         self.landfill_progress = NaturalProgressBar(
             landfill_pb_x, pb_y, pb_width, pb_height,
-            WATER_BLUE, LIGHT_CREAM, style="water"
+            WATER_BLUE, LIGHT_CREAM, style="water"  # Landfill uses water style
         )
-        self.recycling_progress.set_value(0)
-        self.landfill_progress.set_value(0)
+        self.recycling_progress = NaturalProgressBar(
+            recycling_pb_x, pb_y, pb_width, pb_height,
+            LEAF_GREEN, LIGHT_CREAM, style="plant" # Recycling uses plant style
+        )
+        # ***************************************************************************
+        self.recycling_progress.set_value(0) # Initial value remains 0
+        self.landfill_progress.set_value(0) # Initial value remains 0
 
         # --- Button positioning (relative to bottom center) ---
-        # **** MODIFIED VALUES FOR SMALLER BUTTONS ****
-        button_width = int(SCREEN_WIDTH * 0.12)  # Reduced from 0.2 (20% -> 12%)
-        button_height = int(SCREEN_HEIGHT * 0.07) # Reduced from 0.11 (11% -> 7%)
-        button_y = SCREEN_HEIGHT - button_height - int(SCREEN_HEIGHT * 0.08) # Position based on new height
-        button_gap = int(SCREEN_WIDTH * 0.02)     # Slightly reduced from 0.03 (3% -> 2%)
-        # ********************************************
+        # Smaller button dimensions
+        button_width = int(SCREEN_WIDTH * 0.12)
+        button_height = int(SCREEN_HEIGHT * 0.07)
+        button_y = SCREEN_HEIGHT - button_height - int(SCREEN_HEIGHT * 0.08)
+        button_gap = int(SCREEN_WIDTH * 0.02)
 
-        # Instantiate buttons with new dimensions
+        # Instantiate buttons (Unchanged positioning logic relative to center)
         self.correct_button = EcoButton(
             SCREEN_WIDTH // 2 - button_width - button_gap // 2, button_y,
             button_width, button_height,
@@ -313,87 +321,100 @@ class SmartBinInterface:
         self.current_hint = random.choice(self.hints); self.hint_alpha = 0; self.hint_fade_in = True; self.hint_display_duration = 8; self.hint_fade_duration = 1.5; self.hint_state = "fading_in"; self.hint_visible_start_time = 0
     # <<< --- END OF MODIFIED __init__ --- >>>
 
-    # --- Other SmartBinInterface methods remain the same ---
     def update_nature_elements(self): # (Unchanged)
         for element in self.nature_elements: element.update()
     def draw_nature_elements(self, surface): # (Unchanged)
         for element in self.nature_elements: element.draw(surface)
     def update_progress_bars(self): # (Unchanged)
-        self.recycling_progress.update(); self.landfill_progress.update()
+        # The update logic itself doesn't care about position
+        self.recycling_progress.update()
+        self.landfill_progress.update()
 
-    # <<< --- START OF draw_progress_bars (as provided before) --- >>>
+    # <<< --- START OF MODIFIED draw_progress_bars (Swapped Elements) --- >>>
     def draw_progress_bars(self, surface):
         try:
-            # Define card padding (can be fixed or relative)
             card_padding_x = int(SCREEN_WIDTH * 0.02)
             card_padding_y_top = int(SCREEN_HEIGHT * 0.08)
             card_padding_y_bottom = int(SCREEN_HEIGHT * 0.12)
 
-            # Calculate card rects based on the (now larger) progress bars
-            recycling_card_rect = pygame.Rect(
-                self.recycling_progress.x - card_padding_x,
-                self.recycling_progress.y - card_padding_y_top,
-                self.recycling_progress.width + 2 * card_padding_x,
-                self.recycling_progress.height + card_padding_y_top + card_padding_y_bottom
-            )
+            # **** SWAPPED Card Rect Calculations ****
+            # Calculate card rect for Landfill (now on the left)
             landfill_card_rect = pygame.Rect(
                 self.landfill_progress.x - card_padding_x,
                 self.landfill_progress.y - card_padding_y_top,
                 self.landfill_progress.width + 2 * card_padding_x,
                 self.landfill_progress.height + card_padding_y_top + card_padding_y_bottom
             )
+            # Calculate card rect for Recycling (now on the right)
+            recycling_card_rect = pygame.Rect(
+                self.recycling_progress.x - card_padding_x,
+                self.recycling_progress.y - card_padding_y_top,
+                self.recycling_progress.width + 2 * card_padding_x,
+                self.recycling_progress.height + card_padding_y_top + card_padding_y_bottom
+            )
+            # *************************************
 
-            # Draw cards
-            for card_rect in [recycling_card_rect, landfill_card_rect]:
-                pygame.draw.rect(surface, CREAM, card_rect) # No border_radius
-                pygame.draw.rect(surface, WOOD_BROWN, card_rect, 2) # No border_radius
+            # Draw cards (Order doesn't strictly matter, but drawing left then right is logical)
+            pygame.draw.rect(surface, CREAM, landfill_card_rect)
+            pygame.draw.rect(surface, WOOD_BROWN, landfill_card_rect, 2)
+            pygame.draw.rect(surface, CREAM, recycling_card_rect)
+            pygame.draw.rect(surface, WOOD_BROWN, recycling_card_rect, 2)
 
-            # Draw progress indicators
-            self.recycling_progress.draw(surface)
-            self.landfill_progress.draw(surface)
+            # **** SWAPPED Progress Bar Drawing ****
+            self.landfill_progress.draw(surface)    # Draw landfill bar (left)
+            self.recycling_progress.draw(surface)   # Draw recycling bar (right)
+            # ************************************
 
-            # Labels (position relative to progress bar)
-            recycling_label = font_medium.render("Recycling", True, DARK_GREEN)
-            recycling_rect = recycling_label.get_rect(center=(self.recycling_progress.x + self.recycling_progress.width / 2, self.recycling_progress.y - card_padding_y_top / 2)) # Center in top padding area
-            surface.blit(recycling_label, recycling_rect)
-
+            # **** SWAPPED Labels ****
+            # Landfill Label (Left)
             landfill_label = font_medium.render("Landfill", True, TEXT_BROWN)
-            landfill_rect = landfill_label.get_rect(center=(self.landfill_progress.x + self.landfill_progress.width / 2, self.landfill_progress.y - card_padding_y_top / 2)) # Center in top padding area
+            landfill_rect = landfill_label.get_rect(center=(self.landfill_progress.x + self.landfill_progress.width / 2, self.landfill_progress.y - card_padding_y_top / 2))
             surface.blit(landfill_label, landfill_rect)
 
-            # Item Counts (position relative to progress bar)
-            count_y = self.recycling_progress.y + self.recycling_progress.height + card_padding_y_bottom / 2 # Center in bottom padding area
-            recycling_count_text = f"{self.stats.recycled_items} items"
-            recycling_count_surf = font_small.render(recycling_count_text, True, DARK_GREEN)
-            recycling_count_rect = recycling_count_surf.get_rect(center=(recycling_rect.centerx, count_y))
-            surface.blit(recycling_count_surf, recycling_count_rect)
+            # Recycling Label (Right)
+            recycling_label = font_medium.render("Recycling", True, DARK_GREEN)
+            recycling_rect = recycling_label.get_rect(center=(self.recycling_progress.x + self.recycling_progress.width / 2, self.recycling_progress.y - card_padding_y_top / 2))
+            surface.blit(recycling_label, recycling_rect)
+            # ***********************
 
+            # **** SWAPPED Item Counts ****
+            # Use either progress bar for Y positioning as they are aligned
+            count_y = self.landfill_progress.y + self.landfill_progress.height + card_padding_y_bottom / 2
+
+            # Landfill Count (Left) - Position relative to landfill_rect center X
             landfill_count_text = f"{self.stats.landfill_items} items"
             landfill_count_surf = font_small.render(landfill_count_text, True, TEXT_BROWN)
             landfill_count_rect = landfill_count_surf.get_rect(center=(landfill_rect.centerx, count_y))
             surface.blit(landfill_count_surf, landfill_count_rect)
 
-            # Environmental Impact Section (position relative to bottom)
+            # Recycling Count (Right) - Position relative to recycling_rect center X
+            recycling_count_text = f"{self.stats.recycled_items} items"
+            recycling_count_surf = font_small.render(recycling_count_text, True, DARK_GREEN)
+            recycling_count_rect = recycling_count_surf.get_rect(center=(recycling_rect.centerx, count_y))
+            surface.blit(recycling_count_surf, recycling_count_rect)
+            # **************************
+
+            # Environmental Impact Section (Unchanged - still centered at bottom)
             if self.stats.total_items > 0:
-                 impact_card_height = int(SCREEN_HEIGHT * 0.14) # Relative height
-                 impact_card_width = int(SCREEN_WIDTH * 0.45)   # Relative width
-                 impact_card_y = SCREEN_HEIGHT - impact_card_height - int(SCREEN_HEIGHT * 0.02) # Small bottom margin
-                 impact_card_x = SCREEN_WIDTH // 2 - impact_card_width // 2 # Centered
+                 impact_card_height = int(SCREEN_HEIGHT * 0.14)
+                 impact_card_width = int(SCREEN_WIDTH * 0.45)
+                 impact_card_y = SCREEN_HEIGHT - impact_card_height - int(SCREEN_HEIGHT * 0.02)
+                 impact_card_x = SCREEN_WIDTH // 2 - impact_card_width // 2
                  impact_card = pygame.Rect(impact_card_x, impact_card_y, impact_card_width, impact_card_height)
 
-                 pygame.draw.rect(surface, CREAM, impact_card) # No border_radius
-                 pygame.draw.rect(surface, WOOD_BROWN, impact_card, 2) # No border_radius
+                 pygame.draw.rect(surface, CREAM, impact_card)
+                 pygame.draw.rect(surface, WOOD_BROWN, impact_card, 2)
 
                  impact_title = font_medium.render("Environmental Impact", True, TEXT_BROWN)
-                 impact_title_rect = impact_title.get_rect(center=(impact_card.centerx, impact_card.y + impact_card_height * 0.25)) # Position title lower within card
+                 impact_title_rect = impact_title.get_rect(center=(impact_card.centerx, impact_card.y + impact_card_height * 0.25))
                  surface.blit(impact_title, impact_title_rect)
 
-                 stats_y = impact_card.y + impact_card_height * 0.68 # Position stats lower within card
-                 icon_size = int(SCREEN_HEIGHT * 0.03) # Relative icon size
+                 stats_y = impact_card.y + impact_card_height * 0.68
+                 icon_size = int(SCREEN_HEIGHT * 0.03)
 
                  co2_text = f"{self.stats.co2_saved:.1f} kg CO₂"
                  co2_surf = font_small.render(co2_text, True, DARK_GREEN)
-                 co2_rect = co2_surf.get_rect(midright=(impact_card.centerx - int(impact_card_width * 0.05), stats_y)) # Relative horizontal spacing
+                 co2_rect = co2_surf.get_rect(midright=(impact_card.centerx - int(impact_card_width * 0.05), stats_y))
                  surface.blit(co2_surf, co2_rect)
                  leaf_icon_rect = pygame.Rect(0, 0, icon_size, icon_size * 0.8)
                  leaf_icon_rect.midright = (co2_rect.left - int(impact_card_width * 0.02), stats_y)
@@ -401,18 +422,17 @@ class SmartBinInterface:
 
                  water_text = f"{self.stats.water_saved:.1f} L Water"
                  water_surf = font_small.render(water_text, True, WATER_BLUE)
-                 water_rect = water_surf.get_rect(midleft=(impact_card.centerx + int(impact_card_width * 0.05), stats_y)) # Relative horizontal spacing
+                 water_rect = water_surf.get_rect(midleft=(impact_card.centerx + int(impact_card_width * 0.05), stats_y))
                  surface.blit(water_surf, water_rect)
                  drop_icon_rect = pygame.Rect(0, 0, icon_size * 0.7, icon_size)
                  drop_icon_rect.midleft = (water_rect.right + int(impact_card_width * 0.02), stats_y)
                  pygame.draw.ellipse(surface, WATER_BLUE, drop_icon_rect)
         except (pygame.error, TypeError, ValueError) as e:
             print(f"Warning: Error drawing progress bars/stats: {e}")
-            # Simple fallback if drawing fails
             pygame.draw.rect(surface, CREAM, (50, 50, SCREEN_WIDTH-100, SCREEN_HEIGHT-100), 5)
-    # <<< --- END OF draw_progress_bars --- >>>
+    # <<< --- END OF MODIFIED draw_progress_bars --- >>>
 
-    def update_hint(self): # (logic unchanged)
+    def update_hint(self): # (Unchanged)
         current_time = time.time(); time_since_change = current_time - self.last_hint_time
         if self.hint_state == "fading_in":
             if time_since_change < self.hint_fade_duration: self.hint_alpha = int(255 * (time_since_change / self.hint_fade_duration))
@@ -426,7 +446,7 @@ class SmartBinInterface:
             else: self.hint_alpha = 0; self.current_hint = random.choice(self.hints); self.hint_state = "fading_in"; self.last_hint_time = current_time
         self.hint_alpha = max(0, min(255, self.hint_alpha))
 
-    def draw_hint(self, surface): # (Positioning unchanged, already relative)
+    def draw_hint(self, surface): # (Unchanged)
         if self.hint_alpha <= 0: return
         try:
             hint_surf = font_small.render(self.current_hint, True, TEXT_BROWN); hint_rect = hint_surf.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - int(SCREEN_HEIGHT*0.08))) # Relative Y pos
@@ -436,29 +456,46 @@ class SmartBinInterface:
             surface.blit(hint_back, bg_rect.topleft); hint_surf.set_alpha(self.hint_alpha); surface.blit(hint_surf, hint_rect)
         except pygame.error as e: print(f"Warning: Error drawing hint: {e}")
 
-    def process_camera_detection(self, detection_data): # (logic unchanged)
+    def process_camera_detection(self, detection_data): # (Unchanged)
         if self.state == "idle" and isinstance(detection_data, dict):
             item_name = detection_data.get("name", "Unknown Item"); item_type = detection_data.get("type", "TRASH")
             if item_type.upper() not in ["RECYCLING", "TRASH"]: print(f"Warning: Received invalid item type '{item_type}'. Defaulting to TRASH."); item_type = "TRASH"
             print(f"GUI: Received detection - Item: {item_name}, Type: {item_type}"); self.detection_animation = DetectionAnimation(item_name, item_type); self.state = "detecting"
         elif not isinstance(detection_data, dict): print(f"Warning: Received invalid detection data format: {type(detection_data)}")
 
-    def update_detection(self): # (logic unchanged)
+    def update_detection(self): # (Unchanged)
         try:
             if self.state == "idle":
                  if not detection_queue.empty(): detection_data = detection_queue.get(); self.process_camera_detection(detection_data); detection_queue.task_done()
             if self.detection_animation:
                 animation_finished = self.detection_animation.update()
+                # Update stats and progress bars when feedback phase starts
                 if self.detection_animation.phase == "feedback" and not self.detection_animation.stats_updated:
                     self.stats.update_stats(self.detection_animation.item_type); print(f"GUI: Stats updated for {self.detection_animation.item_name}")
-                    if self.stats.total_items > 0: recycling_percentage = self.stats.get_recycling_percentage(); self.recycling_progress.set_value(recycling_percentage); self.landfill_progress.set_value(100 - recycling_percentage); print(f"GUI: Progress bars updated - Rec: {recycling_percentage:.1f}%, Land: {100-recycling_percentage:.1f}%")
-                    else: self.recycling_progress.set_value(0); self.landfill_progress.set_value(0)
-                    self.detection_animation.stats_updated = True
-                if animation_finished: print("GUI: Detection animation finished."); self.detection_animation = None; self.state = "idle"
-        except queue.Empty: pass
-        except Exception as e: print(f"Error in update_detection: {e}"); self.detection_animation = None; self.state = "idle"
+                    # Set progress bar values based on updated stats
+                    if self.stats.total_items > 0:
+                        recycling_percentage = self.stats.get_recycling_percentage()
+                        self.recycling_progress.set_value(recycling_percentage) # Update recycling bar
+                        self.landfill_progress.set_value(100 - recycling_percentage) # Update landfill bar
+                        print(f"GUI: Progress bars updated - Rec: {recycling_percentage:.1f}%, Land: {100-recycling_percentage:.1f}%")
+                    else: # Reset if total is zero (e.g., after incorrect feedback potentially resets stats?)
+                        self.recycling_progress.set_value(0)
+                        self.landfill_progress.set_value(0)
+                    self.detection_animation.stats_updated = True # Mark as updated for this animation instance
+                # Check if the entire animation sequence is finished
+                if animation_finished:
+                    print("GUI: Detection animation finished.")
+                    self.detection_animation = None # Clear the animation object
+                    self.state = "idle" # Return to idle state
+        except queue.Empty:
+            pass # It's normal for the queue to be empty
+        except Exception as e:
+            print(f"Error in update_detection: {e}")
+            # Reset state in case of error during animation update
+            self.detection_animation = None
+            self.state = "idle"
 
-    def draw_detection(self, surface): # (logic unchanged)
+    def draw_detection(self, surface): # (Unchanged)
         try:
             if self.detection_animation:
                 overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA); overlay_alpha = 100
@@ -473,12 +510,11 @@ class SmartBinInterface:
                     self.incorrect_button.draw(surface)
         except (pygame.error, AttributeError) as e: print(f"Warning: Error drawing detection overlay/animation: {e}")
 
-    def handle_button_clicks(self, mouse_pos): # (logic unchanged)
+    def handle_button_clicks(self, mouse_pos): # (Unchanged)
         clicked = False
         if self.state == "detecting" and self.detection_animation and self.detection_animation.phase == "feedback":
             correct_hover = self.correct_button.check_hover(mouse_pos); incorrect_hover = self.incorrect_button.check_hover(mouse_pos)
-            # Use get_pressed() for continuous hold, better to check for MOUSEBUTTONDOWN event edge
-            # This part is handled in the main loop event check
+            # Click handling is triggered by MOUSEBUTTONDOWN in main loop
             if correct_hover and self.correct_button.clicked(): print("Feedback: Correct"); clicked = True
             elif incorrect_hover and self.incorrect_button.clicked(): print("Feedback: Incorrect"); clicked = True
 
@@ -486,11 +522,11 @@ class SmartBinInterface:
                 # Reset state immediately after click feedback
                 self.detection_animation = None
                 self.state = "idle"
-                pygame.time.wait(150) # Short delay to prevent immediate re-triggering if needed
-        return clicked # Indicate if a button relevant to this state was clicked
+                # Optional short delay to prevent accidental re-triggering
+                # pygame.time.wait(150)
+        return clicked # Indicate if a feedback button was clicked
 
-    def check_button_hover(self, mouse_pos): # (logic unchanged)
-        # Only check hover if buttons are potentially visible
+    def check_button_hover(self, mouse_pos): # (Unchanged)
         if self.state == "detecting" and self.detection_animation and self.detection_animation.phase == "feedback":
             try:
                 self.correct_button.check_hover(mouse_pos)
@@ -498,7 +534,6 @@ class SmartBinInterface:
             except (AttributeError, TypeError) as e:
                 print(f"Warning: Error checking button hover state: {e}")
         else:
-            # Ensure buttons are not marked as hovered when not visible
             self.correct_button.hovered = False
             self.incorrect_button.hovered = False
 
@@ -524,187 +559,113 @@ def simulate_detection(queue): # (Unchanged)
 
 # --- Server Thread Function --- (Unchanged)
 def gui_server_thread(host, port, data_queue, running_flag_func):
-    import socket, json, time  # Ensure required modules are imported
+    import socket, json, time
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
     try:
         server_socket.bind((host, port))
         server_socket.listen(1)
         print(f"[Server Thread] Listening on {host}:{port}")
-        server_socket.settimeout(1.0) # Use timeout to check running_flag_func periodically
-
+        server_socket.settimeout(1.0)
         while running_flag_func():
             try:
                 conn, addr = server_socket.accept()
                 with conn:
                     print(f"[Server Thread] Accepted connection from {addr}")
                     data = b""
-                    conn.settimeout(2.0) # Timeout for receiving data from a client
-
-                    # Collect data in chunks until timeout or end marker '}'
+                    conn.settimeout(2.0)
                     while True:
                         try:
                             chunk = conn.recv(1024)
-                            if not chunk:
-                                print("[Server Thread] Connection closed by client.")
-                                break # Connection closed
+                            if not chunk: break
                             data += chunk
-                            # Check if a complete JSON object seems to have arrived
-                            if data.strip().endswith(b'}'):
-                                print("[Server Thread] Detected '}' - attempting parse.")
-                                break
-                        except socket.timeout:
-                            print("[Server Thread] Receive timeout.")
-                            break # Stop waiting if client takes too long
-
+                            if data.strip().endswith(b'}'): break
+                        except socket.timeout: break
                     if data:
                         try:
-                            # Attempt to decode only the necessary part if multiple JSONs were sent quickly (unlikely here but good practice)
                             message_str = data.decode('utf-8').strip()
-                            print(f"[Server Thread] Received raw data (stripped): {message_str}")
-
-                            # Handle potential multiple JSON objects received together (split by '}')
+                            # Handle multiple JSONs potentially concatenated
                             potential_jsons = message_str.split('}')
                             processed_count = 0
                             for part in potential_jsons:
                                 if not part.strip(): continue
-                                json_str = part + '}' # Re-add the closing brace
+                                json_str = part + '}'
                                 try:
                                     detection_data = json.loads(json_str)
-                                    print(f"[Server Thread] Parsed data part: {detection_data}")
-
-                                    if (isinstance(detection_data, dict) and
-                                        "type" in detection_data and
-                                        "name" in detection_data):
-                                        data_queue.put(detection_data)
-                                        print("[Server Thread] Valid data added to queue.")
-                                        processed_count += 1
-                                    else:
-                                        print("[Server Thread] Warning: Parsed data part is not in expected format.")
-                                except json.JSONDecodeError as e:
-                                    print(f"[Server Thread] Error decoding JSON part: {e} - Part: {json_str}")
-                                    # If the first part fails, likely the whole message is bad
-                                    if processed_count == 0: break
-                            if processed_count == 0 and potential_jsons and potential_jsons[0].strip():
-                                 print("[Server Thread] No valid JSON objects found in received data.")
-
-                        except UnicodeDecodeError as e:
-                            print(f"[Server Thread] Error decoding UTF-8: {e} - Raw data approx: {data[:100]}...")
-                        except Exception as e:
-                            print(f"[Server Thread] Error processing received data: {e}")
-                    else:
-                        print("[Server Thread] No data received or connection closed early.")
-
-            except socket.timeout:
-                continue # No connection attempt, just loop again to check running_flag_func
-            except Exception as e:
-                # Avoid crashing the server thread on accept errors
-                print(f"[Server Thread] Error accepting connection: {e}")
-                time.sleep(0.5) # Short pause before retrying accept
-
-    except OSError as e:
-         print(f"[Server Thread] CRITICAL OS Error (e.g., address in use): {e}")
-         # Consider signaling the main thread to exit if binding fails critically
-    except Exception as e:
-        print(f"[Server Thread] Error setting up server socket: {e}")
-    finally:
-        print("[Server Thread] Shutting down...")
-        server_socket.close()
-        print("[Server Thread] Socket closed.")
+                                    if (isinstance(detection_data, dict) and "type" in detection_data and "name" in detection_data):
+                                        data_queue.put(detection_data); processed_count += 1; print("[Server Thread] Valid data added to queue.")
+                                    else: print("[Server Thread] Warning: Parsed data part is not in expected format.")
+                                except json.JSONDecodeError as e: print(f"[Server Thread] Error decoding JSON part: {e} - Part: {json_str}")
+                            if processed_count == 0 and message_str: print("[Server Thread] No valid JSON objects found in received data.")
+                        except UnicodeDecodeError as e: print(f"[Server Thread] Error decoding UTF-8: {e}")
+                        except Exception as e: print(f"[Server Thread] Error processing received data: {e}")
+                    else: print("[Server Thread] No data received or connection closed early.")
+            except socket.timeout: continue
+            except Exception as e: print(f"[Server Thread] Error accepting connection: {e}"); time.sleep(0.5)
+    except OSError as e: print(f"[Server Thread] CRITICAL OS Error (e.g., address in use): {e}")
+    except Exception as e: print(f"[Server Thread] Error setting up server socket: {e}")
+    finally: print("[Server Thread] Shutting down..."); server_socket.close(); print("[Server Thread] Socket closed.")
 
 
-# --- Main Function --- (Unchanged, except for MOUSEBUTTONDOWN logic)
+# --- Main Function --- (Unchanged)
 def main():
     global server_running; server_thread = None
     try:
         interface = SmartBinInterface(); clock = pygame.time.Clock(); running = True
-        # Start server thread
         server_thread = threading.Thread(target=gui_server_thread, args=(GUI_SERVER_HOST, GUI_SERVER_PORT, detection_queue, lambda: server_running), daemon=True);
         server_thread.start()
         print("GUI Server thread started.")
-
         print("GUI Initialized. Waiting for detection data..."); print("Press 'D' to simulate a detection event."); print("Press 'ESC' to quit.")
         last_update_time = time.time()
-
         while running:
-            mouse_pos = pygame.mouse.get_pos() # Get mouse position once per frame
-
-            # --- Event Handling ---
+            mouse_pos = pygame.mouse.get_pos()
             for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                    server_running = False # Signal server thread to stop
+                if event.type == pygame.QUIT: running = False; server_running = False
                 elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        running = False
-                        server_running = False # Signal server thread to stop
+                    if event.key == pygame.K_ESCAPE: running = False; server_running = False
                     if event.key == pygame.K_d:
-                         if interface.state == "idle":
-                             simulate_detection(detection_queue)
-                         else:
-                             print("Simulation ignored: Detection already in progress.")
+                         if interface.state == "idle": simulate_detection(detection_queue)
+                         else: print("Simulation ignored: Detection already in progress.")
                 elif event.type == pygame.MOUSEBUTTONDOWN:
-                     # Check button clicks specifically on the MOUSEBUTTONDOWN event
-                     if event.button == 1: # Left mouse button
-                         interface.handle_button_clicks(event.pos) # Pass click position
+                     if event.button == 1: interface.handle_button_clicks(event.pos)
 
-            # --- Updates ---
-            current_time = time.time(); delta_time = current_time - last_update_time; last_update_time = current_time # delta_time currently unused, but available
-            interface.check_button_hover(mouse_pos) # Update hover states based on current mouse pos
+            current_time = time.time(); delta_time = current_time - last_update_time; last_update_time = current_time
+            interface.check_button_hover(mouse_pos)
             interface.update_nature_elements()
             interface.update_progress_bars()
             interface.update_hint()
-            interface.update_detection() # Handles state changes and processes queue
+            interface.update_detection()
 
-            # --- Drawing ---
             try:
                 draw_background(screen)
                 interface.draw_nature_elements(screen)
                 draw_header(screen)
-
-                # Draw main content based on state
                 if interface.state == "idle":
                     interface.draw_progress_bars(screen)
-                    # Only draw hint if buttons aren't animating out from a click
                     correct_animating = hasattr(interface.correct_button, 'animation') and interface.correct_button.animation > 0;
                     incorrect_animating = hasattr(interface.incorrect_button, 'animation') and interface.incorrect_button.animation > 0
-                    if not (correct_animating or incorrect_animating):
-                        interface.draw_hint(screen)
-                else: # State is "detecting"
-                    interface.draw_detection(screen) # This will draw the animation and buttons if in feedback phase
-
+                    if not (correct_animating or incorrect_animating): interface.draw_hint(screen)
+                else: interface.draw_detection(screen)
             except Exception as draw_err:
                 print(f"Critical error during drawing phase: {draw_err}"); import traceback; traceback.print_exc()
-                # Fallback drawing to indicate an error
                 screen.fill(CREAM)
                 try:
-                    err_font = pygame.font.SysFont("Arial", 20)
-                    err_text = err_font.render("Drawing Error Occurred - Check Console", True, BLACK)
-                    screen.blit(err_text, (50, 50))
-                except Exception as font_err:
-                    print(f"Could not even render error text: {font_err}")
+                    err_font = pygame.font.SysFont("Arial", 20); err_text = err_font.render("Drawing Error Occurred - Check Console", True, BLACK); screen.blit(err_text, (50, 50))
+                except Exception as font_err: print(f"Could not even render error text: {font_err}")
 
+            pygame.display.flip()
+            clock.tick(60)
 
-            pygame.display.flip() # Update the full screen
-            clock.tick(60) # Limit frame rate
-
-    except Exception as main_err:
-        print(f"Critical error in main loop: {main_err}"); import traceback; traceback.print_exc()
+    except Exception as main_err: print(f"Critical error in main loop: {main_err}"); import traceback; traceback.print_exc()
     finally:
         print("Shutting down Pygame and Server...")
-        server_running = False # Ensure flag is set
+        server_running = False
         if server_thread and server_thread.is_alive():
-            print("Waiting for server thread to join...")
-            server_thread.join(timeout=2.0) # Wait max 2 seconds for thread to exit cleanly
-            if server_thread.is_alive():
-                print("Server thread did not join cleanly.")
-        else:
-             print("Server thread already stopped or not started.")
+            print("Waiting for server thread to join..."); server_thread.join(timeout=2.0)
+            if server_thread.is_alive(): print("Server thread did not join cleanly.")
+        else: print("Server thread already stopped or not started.")
         pygame.quit()
-        print("Application terminated.");
-        # Use sys.exit() for a cleaner exit, especially if threads might hang
-        sys.exit()
+        print("Application terminated."); sys.exit()
 
 if __name__ == "__main__":
     main()

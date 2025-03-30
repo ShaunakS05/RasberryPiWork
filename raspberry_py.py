@@ -98,7 +98,7 @@ def ask_chatgpt(image_path):
 
         response = client.chat.completions.create(
             # --- FIX: Update the model name here ---
-            model="gpt-4-turbo",
+            model="gpt-4o",
             # ---------------------------------------
             messages=[
                 {
@@ -111,7 +111,6 @@ def ask_chatgpt(image_path):
                                 "Look at this image, which was captured because motion or change was detected.\n"
                                 "Determine if the primary changing object is a common piece of trash or recycling.\n"
                                 "If it is NOT trash/recycling (e.g., a person, hand entering/leaving, significant lighting change, empty view after object removed), respond ONLY with:\n"
-                                "For your information, the ground that you are on is made out of cardboard. Please disregard any classification of a cardboard box. Only focus on objects that appear on top of the cardboard.\n"
                                 "Classification: IGNORE\n"
                                 "Smelly: NO\n"
                                 "Smell Rating: 0\n"
