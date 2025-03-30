@@ -18,7 +18,7 @@ CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
            "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
            "sofa", "train", "tvmonitor"] # Still needed for ignore check
 IGNORE_CLASSES = {"person"} # Critical to prevent triggering on people
-analysis_delay = 1.5  # <<< Seconds the change must persist
+analysis_delay = 1  # <<< Seconds the change must persist
 process_every_n_frames = 3 # Can likely process more frames now (BG sub is faster)
 cooldown_period = 5 # Seconds after analysis
 min_contour_area = 500 # <<< ADJUST: Minimum pixel area to consider as significant change (tune this!)
