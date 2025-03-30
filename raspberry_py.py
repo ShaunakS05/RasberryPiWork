@@ -10,6 +10,17 @@ import json   # For formatting data to send
 from openai import OpenAI
 from dotenv import load_dotenv
 
+
+from pymongo import MongoClient
+from datetime import datetime
+import uuid
+from bson.objectid import ObjectId
+
+# Connect to MongoDB
+client = MongoClient('mongodb+srv://nyanprak:Samprakash3!@trash.utmo5ml.mongodb.net/?retryWrites=true&w=majority&appName=trash')
+db = client['trash_management_db']
+collection = db['trash_cans']
+
 # --- Configuration ---
 load_dotenv()
 try:
@@ -342,6 +353,25 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
             # The message for these cases was printed in the rule checks above.
             pass
         # -----------------------------
+
+
+        # Generate a unique ID for the new item
+new_item_id = f"item-{uuid.uuid4().hex[:8]}"
+
+        # Create the new item
+        new_item = {
+            "id": new_item_id,
+            "type": classification_result,  # or "recycle", "compost", etc.
+            "name": item_name_result,  # name of the trash item
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Add the item to the array using the $push operator
+        trash_can_id = "67e90d1dc1ede39d902e351a"  # The ObjectId from your example
+        result = collection.update_one(
+            {"_id": ObjectId(trash_can_id)},  # Convert string to ObjectId
+            {"$push": {"items": new_item}}
+        )
 
         # Reset processing flag and update trigger time regardless of command sending
         is_processing = False
