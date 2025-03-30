@@ -9,6 +9,36 @@ load_dotenv()
 client = OpenAI(api_key = os.getenv("OPENAI_API_KEY"))
 
 #Function to convert image to base64
+def live_feed_and_capture(image_path="item.jpg"):
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Cannot open camera")
+        return
+
+    print("Live feed started — press 'c' to capture, 'q' to quit")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to grab frame")
+            break
+
+        cv2.imshow("Live Feed", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('c'):
+            cv2.imwrite(image_path, frame)
+            print(f"Image captured and saved to {image_path}")
+            classification, is_smelly, smell_rating, volume_guess, item_name = ask_chatgpt(image_path)
+            print("→ Final classification:", classification)
+        elif key == ord('q'):
+            print("Exiting live feed")
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+#Function to convert image to base64
 def capture_image(path = "item.jpg"):
     cap = cv2.VideoCapture(0)
     print("Capturing image Nathan")
@@ -44,7 +74,9 @@ def ask_chatgpt(image_path):
                             "Classification: <RECYCLING or TRASH>\n"
                             "Smelly: <YES or NO>\n"
                             "Smell Rating: <1 to 10>\n"
-                            "4. Estimate the volume of the obect in meters cubed. Respond with <x m^3>"
+                            "4. Estimate the volume of the obect in cm cubed by identifying the object and finding the average volume of that kind of object. Respond with <x cm^3>\n"
+                            "5. Determine what the item is. This value should return a string in all caps."
+
                     },
                     {
                         "type": "image_url",
@@ -82,10 +114,17 @@ def ask_chatgpt(image_path):
     except:
         volume_guess = -1.0  # couldn't parse
 
+    try:
+        item_name = lines[4].split(":")[1].strip().upper()
+    except:
+        item_name = "UNKNOWN"
+
+
     print("→ Sort to:", classification)
     print("→ Smelly object?", is_smelly)
     print("→ Smell rating:", smell_rating)
-    print("→ Estimated volume (m^3):", volume_guess)
+    print("→ Estimated volume (cm^3):", volume_guess)
+    print("→ Item:", item_name)
 
     if smell_rating >= 7:
         print("Trash contains object that is very smelly")
@@ -96,10 +135,11 @@ def ask_chatgpt(image_path):
     else:
         print("Smell rating could not be determined")
 
-    return classification, is_smelly, smell_rating, volume_guess
+    return classification, is_smelly, smell_rating, volume_guess, item_name
 
 if __name__ == "__main__":
     image_path = "item.jpg"
     capture_image(image_path)
-    classification, is_smelly, smell_rating, volume_guess = ask_chatgpt(image_path)
+    classification, is_smelly, smell_rating, volume_guess, item_name = ask_chatgpt(image_path)
     print("→ Final classification:", classification)
+    live_feed_and_capture("item.jpg")
