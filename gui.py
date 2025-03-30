@@ -31,7 +31,7 @@ except pygame.error as e:
     print(f"Warning: Could not set fullscreen mode ({e}). Trying windowed mode.")
     screen = pygame.display.set_mode((actual_screen_width, actual_screen_height))
 
-pygame.display.set_caption("SmartBin™ Waste Management System")
+pygame.display.set_caption("Consolimate™ Waste Management System")
 
 # --- Update Global Dimensions USED BY GUI ELEMENTS ---
 SCREEN_WIDTH = actual_screen_width
@@ -46,7 +46,7 @@ WOOD_BROWN = (160, 120, 85); TEXT_BROWN = (90, 65, 40)
 
 # --- Fonts ---
 try:
-    font_title = pygame.font.SysFont("DejaVu Sans", 36, bold=True)
+    font_title = pygame.font.SysFont("DejaVu Sans", 45, bold=True)
     font_large = pygame.font.SysFont("DejaVu Sans", 30, bold=True)
     font_medium = pygame.font.SysFont("DejaVu Sans", 22)
     font_small = pygame.font.SysFont("DejaVu Sans", 18)
@@ -88,6 +88,7 @@ class BinStats:
         self.total_items += 1
         if bin_type.upper() == "RECYCLING":
             self.recycled_items += 1
+            print(self.recycled_items)
             self.co2_saved += random.uniform(0.1, 0.3)
             self.water_saved += random.uniform(0.5, 2.0)
         elif bin_type.upper() == "TRASH":
@@ -113,8 +114,8 @@ class NatureElement:
         self.x = random.randint(0, SCREEN_WIDTH)
         self.y = -random.randint(10, 50)
         self.type = random.choice(["leaf", "drop"])
-        self.size = random.randint(3, 8) if self.type == "leaf" else random.randint(2, 5)
-        self.speed = random.uniform(0.3, 1.0)
+        self.size = random.randint(6, 15) if self.type == "leaf" else random.randint(6, 15)
+        self.speed = random.uniform(1, 2)
         self.drift = random.uniform(-0.3, 0.3)
         self.rotation = random.randint(0, 360)
         self.rot_speed = random.uniform(-1, 1)
@@ -239,7 +240,7 @@ class NaturalProgressBar:
                          if i == leaf_idx - 1:
                              leaf_x = (start_point[0] + end_point[0]) / 2
                              leaf_y = (start_point[1] + end_point[1]) / 2
-                             leaf_size = random.randint(5, 8)
+                             leaf_size = random.randint(15, 18)
                              try:
                                  leaf_surf = pygame.Surface((leaf_size * 3, leaf_size * 2), pygame.SRCALPHA)
                                  pygame.draw.ellipse(leaf_surf, LEAF_GREEN, (0, 0, leaf_size * 3, leaf_size * 2))
@@ -612,7 +613,7 @@ class SmartBinInterface:
         self.correct_button = EcoButton(SCREEN_WIDTH // 2 - button_width - button_gap // 2, button_y, button_width, button_height, "Correct", LEAF_GREEN, LIGHT_GREEN)
         self.incorrect_button = EcoButton(SCREEN_WIDTH // 2 + button_gap // 2, button_y, button_width, button_height, "Incorrect", SOFT_BROWN, LIGHT_BROWN)
         self.last_hint_time = 0; self.hint_interval = 25
-        self.hints = ["SmartBin™ uses AI to sort waste accurately.", "Recycling reduces landfill waste and saves resources.", "Contamination ruins recycling - please sort carefully!", "Over 95% accuracy in waste sorting!", "Thank you for helping keep the planet green!", "Plastic bottles take over 400 years to decompose.", "Glass is infinitely recyclable!", "Recycle paper 5-7 times before fibers weaken.", "Check local guidelines for specific recycling rules.", "Reduce, Reuse, Recycle - in that order!"]
+        self.hints = ["Consolimate™ uses AI to sort waste accurately.", "Recycling reduces landfill waste and saves resources.", "Contamination ruins recycling - please sort carefully!", "Over 95% accuracy in waste sorting!", "Thank you for helping keep the planet green!", "Plastic bottles take over 400 years to decompose.", "Glass is infinitely recyclable!", "Recycle paper 5-7 times before fibers weaken.", "Check local guidelines for specific recycling rules.", "Reduce, Reuse, Recycle - in that order!"]
         self.current_hint = random.choice(self.hints); self.hint_alpha = 0; self.hint_fade_in = True; self.hint_display_duration = 8; self.hint_fade_duration = 1.5; self.hint_state = "fading_in"; self.hint_visible_start_time = 0
 
     def update_nature_elements(self):
@@ -837,7 +838,7 @@ def draw_header(surface):
             grain_line.fill((*SOFT_BROWN[:3], grain_alpha))
             surface.blit(grain_line, (grain_x, y))
         pygame.draw.rect(surface, WOOD_BROWN, (0, header_height - 2, SCREEN_WIDTH, 2))
-        title_text = font_title.render("SmartBin™ Waste Management", True, TEXT_BROWN)
+        title_text = font_title.render("Consolimate™ Waste Management", True, TEXT_BROWN)
         title_rect = title_text.get_rect(center=(SCREEN_WIDTH//2, header_height//2))
         surface.blit(title_text, title_rect)
         leaf_size = int(header_height * 0.3)
