@@ -6,38 +6,43 @@ import threading
 import time
 from openai import OpenAI
 from dotenv import load_dotenv
-from collections import Counter
+# No need for Counter anymore for background init
 
 # --- Configuration ---
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-model_proto = "MobileNetSSD_deploy.prototxt.txt"
-model_weights = "MobileNetSSD_deploy.caffemodel"
-confidence_threshold = 0.4
+model_proto = "MobileNetSSD_deploy.prototxt.txt" # Still needed for ignore check
+model_weights = "MobileNetSSD_deploy.caffemodel" # Still needed for ignore check
+confidence_threshold = 0.4 # For ignore check
 CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
            "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
            "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
-           "sofa", "train", "tvmonitor"]
-IGNORE_CLASSES = {"person"}
-# --- New Configuration ---
-analysis_delay = 1.5  # <<< Seconds the new object must be present before analysis
-process_every_n_frames = 5 # Keep frame skipping
-cooldown_period = 5 # Seconds after analysis before next trigger possible
+           "sofa", "train", "tvmonitor"] # Still needed for ignore check
+IGNORE_CLASSES = {"person"} # Critical to prevent triggering on people
+analysis_delay = 1.5  # Seconds the change must persist
+process_every_n_frames = 3 # Can likely process more frames now (BG sub is faster)
+cooldown_period = 5 # Seconds after analysis
+min_contour_area = 500 # <<< ADJUST: Minimum pixel area to consider as significant change (tune this!)
 
 # --- Global Variables ---
 current_frame = None
-is_processing = False # Flag for active OpenAI call
-last_trigger_time = 0 # Timestamp of the last analysis start
-new_object_first_seen_time = 0.0 # Timestamp when a new object candidate is first detected
+is_processing = False
+last_trigger_time = 0
+change_first_seen_time = 0.0 # Timestamp when significant change is first detected
 
-# --- Load DNN Model ---
+# --- Load DNN Model (Only needed for Ignore Check now) ---
 try:
     net = cv2.dnn.readNetFromCaffe(model_proto, model_weights)
-    print("MobileNet SSD model loaded successfully.")
+    print("MobileNet SSD model loaded (for ignore check).")
 except cv2.error as e:
     print(f"Error loading DNN model: {e}")
-    # ... (error handling)
     exit()
+
+# --- Background Subtractor ---
+# history=500: How many frames used for modeling background
+# varThreshold=16: Threshold on the squared Mahalanobis distance to decide if pixel is foreground
+# detectShadows=True: Detect and mark shadows (we'll filter them out)
+backSub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=30, detectShadows=True) # Tune varThreshold if needed
 
 # --- (Keep encode_image, ask_chatgpt, process_capture functions as they are) ---
 
@@ -49,7 +54,7 @@ def encode_image(image_path):
 
 # Function to call the OpenAI API and classify the captured image
 def ask_chatgpt(image_path):
-    print(f"→ Analyzing image: {image_path}")
+    print(f"→ Analyzing image based on detected change: {image_path}")
     try:
         imageDecoded = encode_image(image_path)
 
@@ -62,10 +67,11 @@ def ask_chatgpt(image_path):
                         {
                             "type": "text",
                             "text": (
-                                # ... (Keep the detailed prompt as before) ...
+                                # The prompt remains the same - asking GPT-4V to classify or ignore
                                 "You are a trashcan vision assistant.\n"
-                                "Look at this object and determine if it is a common piece of trash or recycling.\n"
-                                "If it is NOT trash/recycling (e.g., a person, hand, background view), respond ONLY with:\n"
+                                "Look at this image, which was captured because motion or change was detected.\n"
+                                "Determine if the primary changing object is a common piece of trash or recycling.\n"
+                                "If it is NOT trash/recycling (e.g., a person, hand, significant lighting change, empty view after object removed), respond ONLY with:\n"
                                 "Classification: IGNORE\n"
                                 "Smelly: NO\n"
                                 "Smell Rating: 0\n"
@@ -135,7 +141,7 @@ def ask_chatgpt(image_path):
 
         # --- Process the results ---
         if classification == "IGNORE":
-            print("→ GPT-4V determined the object should be ignored.")
+            print("→ GPT-4V determined the object/change should be ignored.")
             return None # Return None to signal ignoring
 
         print("→ Final Classification:", classification)
@@ -165,29 +171,27 @@ def ask_chatgpt(image_path):
 
 def process_capture(frame_to_process, image_path="item_capture.jpg"):
     global is_processing, last_trigger_time
-    # This function remains largely the same, but the print message is updated
-    print(f"Object present for >{analysis_delay}s. Processing captured frame...")
+    print(f"Change detected for >{analysis_delay}s. Processing captured frame...")
     try:
         save_path = image_path
         cv2.imwrite(save_path, frame_to_process)
         print(f"Image captured and saved to {save_path}")
         result = ask_chatgpt(save_path)
+        # ... (rest of function unchanged)
         if result:
-            pass # Optional: Handle successful analysis result
+            pass
         else:
             print("Analysis resulted in IGNORE or an error.")
     except Exception as e:
         print(f"Error during frame processing or saving: {e}")
     finally:
-        # IMPORTANT: Reset processing flag and set last trigger time
         is_processing = False
         last_trigger_time = time.time()
         print(f"Processing finished. Cooldown active for {cooldown_period}s.")
-        # NOTE: new_object_first_seen_time is reset in the main loop's logic
 
 # --- MODIFIED FUNCTION ---
 def live_feed_and_detect(image_path="item_capture.jpg"):
-    global current_frame, is_processing, last_trigger_time, new_object_first_seen_time
+    global current_frame, is_processing, last_trigger_time, change_first_seen_time
 
     cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
     if not cap.isOpened():
@@ -196,43 +200,21 @@ def live_feed_and_detect(image_path="item_capture.jpg"):
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    (h, w) = (int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)), int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))) # Get actual dimensions
 
-    print("Camera opened. Allowing time for adjustments...")
-    time.sleep(2.0)
 
-    # --- Background Initialization (Unchanged) ---
-    print("Capturing initial background view...")
-    initial_object_classes = set()
-    initial_frames_to_scan = 15
-    initial_detections = Counter()
-    for _ in range(initial_frames_to_scan):
+    print("Camera opened. Allowing time for background learning...")
+    # Give the background subtractor some initial frames to learn
+    for _ in range(30):
         ret, frame = cap.read()
-        if not ret: continue
-        (h, w) = frame.shape[:2]
-        blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
-        net.setInput(blob)
-        detections = net.forward()
-        for i in np.arange(0, detections.shape[2]):
-            confidence = detections[0, 0, i, 2]
-            if confidence > confidence_threshold:
-                idx = int(detections[0, 0, i, 1])
-                if idx < len(CLASSES) and CLASSES[idx] != "background" and CLASSES[idx] not in IGNORE_CLASSES:
-                    initial_detections[CLASSES[idx]] += 1
+        if ret:
+            backSub.apply(frame)
         time.sleep(0.05)
-    detection_threshold = initial_frames_to_scan // 2
-    for obj_class, count in initial_detections.items():
-        if count > detection_threshold:
-            initial_object_classes.add(obj_class)
-    if initial_object_classes:
-        print(f"Initial background objects identified: {', '.join(initial_object_classes)}")
-    else:
-        print("Initial view appears empty or contains only ignored objects.")
-    print(f"Starting continuous monitoring. Will analyze new objects present for >{analysis_delay}s...")
-    # --- End Background Initialization ---
+
+    print(f"Starting monitoring. Will analyze significant changes present for >{analysis_delay}s...")
 
     frame_counter = 0
-    last_detection_boxes = []
-    status_text = "Monitoring" # Text to display on screen
+    status_text = "Monitoring"
 
     while True:
         ret, frame = cap.read()
@@ -241,97 +223,99 @@ def live_feed_and_detect(image_path="item_capture.jpg"):
             time.sleep(0.1)
             continue
 
-        current_frame = frame.copy()
-        display_frame = frame
-        now = time.time() # Get current time at the start of the loop
+        current_frame = frame.copy() # Keep clean copy
+        display_frame = frame # Frame to draw on
+        now = time.time()
 
         frame_counter += 1
 
-        # --- Process frame intermittently ---
+        # --- Process frame intermittently (BG Subtraction is faster, can use lower N) ---
         if frame_counter % process_every_n_frames == 0:
-            (h, w) = frame.shape[:2]
-            blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
-            net.setInput(blob)
-            detections = net.forward()
+            # 1. Apply Background Subtraction
+            fgMask = backSub.apply(current_frame)
 
-            detected_new_object_this_frame = False
-            ignore_object_detected = False
-            current_detection_boxes = []
-            new_object_label = "" # Store the label of the potential new object
+            # Filter out shadows (value 127 in MOG2 default)
+            fgMask = cv2.threshold(fgMask, 200, 255, cv2.THRESH_BINARY)[1] # Keep only definite foreground
 
-            for i in np.arange(0, detections.shape[2]):
-                confidence = detections[0, 0, i, 2]
-                if confidence > confidence_threshold:
-                    idx = int(detections[0, 0, i, 1])
-                    box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-                    (startX, startY, endX, endY) = box.astype("int")
-                    label = "Unknown"
-                    color = (0, 255, 255) # Default Yellow
+            # 2. Clean up mask (Morphological Operations)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)) # Kernel for morphology
+            # Remove small noise (erosion) then enlarge remaining areas (dilation)
+            fgMask_cleaned = cv2.morphologyEx(fgMask, cv2.MORPH_OPEN, kernel, iterations=2)
+            # Close gaps within objects
+            fgMask_cleaned = cv2.morphologyEx(fgMask_cleaned, cv2.MORPH_CLOSE, kernel, iterations=3)
 
-                    if idx < len(CLASSES):
-                        detected_class = CLASSES[idx]
-                        if detected_class == "background": continue
 
-                        if detected_class in IGNORE_CLASSES:
-                            ignore_object_detected = True
-                            color = (0, 0, 255)
-                            display_label = f"Ignoring: {detected_class}"
-                        elif detected_class not in initial_object_classes:
-                            # This is a potential new object candidate
-                            detected_new_object_this_frame = True
-                            new_object_label = detected_class # Store its label
-                            color = (0, 255, 0)
-                            display_label = f"NEW? {detected_class}" # Mark as potential new
-                        else:
-                            color = (255, 150, 0)
-                            display_label = f"BG: {detected_class}"
-                    else: continue
+            # 3. Find Contours (Areas of Change)
+            contours, _ = cv2.findContours(fgMask_cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-                    current_detection_boxes.append({
-                        "box": (startX, startY, endX, endY),
-                        "label": f"{display_label} ({confidence:.2f})",
-                        "color": color
-                    })
+            significant_change_detected = False
+            contour_boxes = [] # Store boxes of significant contours
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
+                if area > min_contour_area:
+                    significant_change_detected = True
+                    # Get bounding box for visualization
+                    x, y, cw, ch = cv2.boundingRect(cnt)
+                    contour_boxes.append((x, y, x+cw, y+ch))
+                    # No need to break, check all contours
 
-            # Update boxes for display immediately
-            last_detection_boxes = current_detection_boxes
+            # --- Visualization (Optional: Show the mask) ---
+            # cv2.imshow("Foreground Mask", fgMask_cleaned)
+            # ------------------------------------------------
 
-            # --- New Trigger Logic with Delay ---
-            is_new_object_condition_met = detected_new_object_this_frame and not ignore_object_detected
+            # 4. Check for Ignored Objects (using DNN) *only if* change was detected
+            ignore_object_detected_in_frame = False
+            if significant_change_detected:
+                # Preprocess frame for DNN
+                blob = cv2.dnn.blobFromImage(cv2.resize(current_frame, (300, 300)), 0.007843, (300, 300), 127.5)
+                net.setInput(blob)
+                detections = net.forward()
 
-            if is_new_object_condition_met:
-                if new_object_first_seen_time == 0.0:
-                    # First time seeing this new object candidate
-                    print(f"New object candidate ({new_object_label}) detected. Starting {analysis_delay}s timer...")
-                    new_object_first_seen_time = now
-                    status_text = f"Waiting ({new_object_label})..."
+                for i in np.arange(0, detections.shape[2]):
+                    confidence = detections[0, 0, i, 2]
+                    if confidence > confidence_threshold:
+                        idx = int(detections[0, 0, i, 1])
+                        if idx < len(CLASSES) and CLASSES[idx] in IGNORE_CLASSES:
+                            print(f"Ignoring change due to detected: {CLASSES[idx]}")
+                            ignore_object_detected_in_frame = True
+                            # Optional: Draw red box around ignored DNN object
+                            box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+                            (startX, startY, endX, endY) = box.astype("int")
+                            cv2.rectangle(display_frame, (startX, startY), (endX, endY), (0, 0, 255), 2)
+                            cv2.putText(display_frame, f"Ignoring: {CLASSES[idx]}", (startX, startY - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                            break # If we see one ignored object, stop DNN check
+
+
+            # --- Trigger Logic based on Change Detection & Ignore Check ---
+            is_valid_change_condition_met = significant_change_detected and not ignore_object_detected_in_frame
+
+            if is_valid_change_condition_met:
+                if change_first_seen_time == 0.0:
+                    print(f"Significant change detected. Starting {analysis_delay}s timer...")
+                    change_first_seen_time = now
+                    status_text = "Waiting (Change)..."
                 else:
-                    # New object candidate still present, check if delay has passed
-                    elapsed_time = now - new_object_first_seen_time
-                    status_text = f"Waiting ({new_object_label}) {elapsed_time:.1f}s / {analysis_delay}s"
+                    elapsed_time = now - change_first_seen_time
+                    status_text = f"Waiting (Change) {elapsed_time:.1f}s / {analysis_delay}s"
                     if elapsed_time >= analysis_delay:
-                        # Delay passed! Check if ready to analyze
                         if not is_processing and (now - last_trigger_time > cooldown_period):
-                            status_text = f"Analyzing ({new_object_label})..."
-                            print(f"--- {new_object_label} detected for >{analysis_delay}s. Triggering Analysis ---")
-                            is_processing = True # Set processing flag
-                            # Reset timer *before* starting thread to prevent immediate re-trigger
-                            new_object_first_seen_time = 0.0
-                            frame_to_analyze = current_frame
+                            status_text = "Analyzing (Change)..."
+                            print(f"--- Change detected for >{analysis_delay}s. Triggering Analysis ---")
+                            is_processing = True
+                            change_first_seen_time = 0.0 # Reset timer before thread
+                            frame_to_analyze = current_frame # Use the clean frame
                             threading.Thread(target=process_capture, args=(frame_to_analyze, image_path)).start()
                         elif is_processing:
                              status_text = "Waiting (Analysis in progress)"
                         elif (now - last_trigger_time <= cooldown_period):
                              status_text = f"Waiting (Cooldown {cooldown_period - (now - last_trigger_time):.1f}s)"
 
-
             else:
-                # No new object detected in this frame (or an ignored one is present)
-                if new_object_first_seen_time != 0.0:
-                    # Reset the timer if the object disappears before analysis
-                    print("New object candidate disappeared before analysis delay.")
-                    new_object_first_seen_time = 0.0
-                # Update status text based on whether processing or cooldown is active
+                # No valid change detected in this frame
+                if change_first_seen_time != 0.0:
+                    print("Change disappeared or ignored object detected before analysis delay.")
+                    change_first_seen_time = 0.0 # Reset timer
+                # Update status based on processing/cooldown
                 if is_processing:
                     status_text = "Waiting (Analysis in progress)"
                 elif (now - last_trigger_time <= cooldown_period) and last_trigger_time != 0:
@@ -340,20 +324,19 @@ def live_feed_and_detect(image_path="item_capture.jpg"):
                      status_text = "Monitoring"
 
 
-        # --- Drawing Bounding Boxes and Status (on every frame) ---
-        for detection in last_detection_boxes:
-            (startX, startY, endX, endY) = detection["box"]
-            label = detection["label"]
-            color = detection["color"]
-            cv2.rectangle(display_frame, (startX, startY), (endX, endY), color, 2)
-            y = startY - 15 if startY - 15 > 15 else startY + 15
-            cv2.putText(display_frame, label, (startX, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        # --- Drawing Bounding Boxes for Contours (on every frame) ---
+        # Only draw if valid change was detected in the *last processed frame*
+        # and the timer might be running or analysis starting
+        if is_valid_change_condition_met or status_text.startswith("Waiting (Change)") or status_text.startswith("Analyzing (Change)"):
+             for (x1, y1, x2, y2) in contour_boxes:
+                 cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 255), 2) # Yellow box for change
+
 
         # Display Status Text
         cv2.putText(display_frame, f"Status: {status_text}", (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
         # --- Display the frame ---
-        cv2.imshow("Live Feed - Object Detection", display_frame)
+        cv2.imshow("Live Feed - Change Detection", display_frame) # Renamed window
 
         # --- Handle Quit ---
         key = cv2.waitKey(1) & 0xFF
@@ -366,11 +349,12 @@ def live_feed_and_detect(image_path="item_capture.jpg"):
     cv2.destroyAllWindows()
     print("Camera released and windows closed.")
 
+
 # --- Main Execution ---
 if __name__ == "__main__":
-    # ... (model file check) ...
+    # Only check for DNN model files now, as BG subtractor is built-in
     if not os.path.exists(model_proto) or not os.path.exists(model_weights):
-        print(f"Error: Model files not found.")
+        print(f"Error: DNN Model files for ignore check not found.")
         print(f"Please ensure '{model_proto}' and '{model_weights}' are in the script's directory.")
     else:
         live_feed_and_detect("item_capture.jpg")
