@@ -6,38 +6,76 @@ import math
 import time
 import threading
 import queue
-import socket  # <-- Add socket import
-import json    # <-- Add json import
-# --- Removed OpenCV, numpy, base64, os, serial, OpenAI ---
+import socket
+import json
 
 # --- Pygame Initialization ---
 pygame.init()
 
-# Screen dimensions
-SCREEN_WIDTH = 800
-SCREEN_HEIGHT = 450
-screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-pygame.display.set_caption("SmartBin™ Waste Management System")
+# --- Get Screen Info for Fullscreen ---
+try:
+    info = pygame.display.Info()
+    actual_screen_width = info.current_w
+    actual_screen_height = info.current_h
+    print(f"Detected screen resolution: {actual_screen_width}x{actual_screen_height}")
+except pygame.error as e:
+    print(f"Warning: Could not get screen info ({e}). Using default 800x450.")
+    actual_screen_width = 800
+    actual_screen_height = 450
 
-# Define colors - (Colors remain the same)
+# --- Set Display Mode to Fullscreen ---
+# Use the detected dimensions and the FULLSCREEN flag
+try:
+    screen = pygame.display.set_mode((actual_screen_width, actual_screen_height), pygame.FULLSCREEN)
+    print("Fullscreen mode set.")
+except pygame.error as e:
+    print(f"Warning: Could not set fullscreen mode ({e}). Trying windowed mode.")
+    screen = pygame.display.set_mode((actual_screen_width, actual_screen_height)) # Fallback
+
+pygame.display.set_caption("SmartBin™ Waste Management System") # Caption might not be visible
+
+# --- Update Global Dimensions USED BY GUI ELEMENTS ---
+# IMPORTANT: All subsequent code will use these updated values
+SCREEN_WIDTH = actual_screen_width
+SCREEN_HEIGHT = actual_screen_height
+
+# --- Define colors --- (Unchanged)
 WHITE = (255, 255, 255); BLACK = (0, 0, 0); CREAM = (248, 246, 235)
 LIGHT_CREAM = (252, 250, 245); LEAF_GREEN = (105, 162, 76); LIGHT_GREEN = (183, 223, 177)
 DARK_GREEN = (65, 122, 36); SOFT_BROWN = (139, 98, 65); LIGHT_BROWN = (188, 152, 106)
 WATER_BLUE = (99, 171, 190); LIGHT_BLUE = (175, 219, 230); SUNSET_ORANGE = (233, 127, 2)
 WOOD_BROWN = (160, 120, 85); TEXT_BROWN = (90, 65, 40)
 
-# Fonts - (Fonts remain the same)
-font_title = pygame.font.SysFont("Arial", 36, bold=True); font_large = pygame.font.SysFont("Arial", 30, bold=True)
-font_medium = pygame.font.SysFont("Arial", 22); font_small = pygame.font.SysFont("Arial", 18)
-font_tiny = pygame.font.SysFont("Arial", 16)
+# --- Fonts --- (Unchanged)
+try:
+    font_title = pygame.font.SysFont("Arial", 36, bold=True)
+    font_large = pygame.font.SysFont("Arial", 30, bold=True)
+    font_medium = pygame.font.SysFont("Arial", 22)
+    font_small = pygame.font.SysFont("Arial", 18)
+    font_tiny = pygame.font.SysFont("Arial", 16)
+except Exception as e:
+    print(f"Warning: Could not load system font 'Arial'. Using default font. Error: {e}")
+    font_title = pygame.font.Font(None, 40) # Default fallback
+    font_large = pygame.font.Font(None, 34)
+    font_medium = pygame.font.Font(None, 26)
+    font_small = pygame.font.Font(None, 22)
+    font_tiny = pygame.font.Font(None, 18)
 
-# --- Communication Setup ---
+
+# --- Communication Setup --- (Unchanged)
 detection_queue = queue.Queue()
-GUI_SERVER_HOST = '0.0.0.0' # Listen on all available network interfaces
-GUI_SERVER_PORT = 9999      # Port for the detector to connect to (must match raspberry_pi.py)
-server_running = True       # Flag to control the server thread
+GUI_SERVER_HOST = '0.0.0.0'
+GUI_SERVER_PORT = 9999
+server_running = True
 
 # --- Pygame GUI Classes ---
+# (BinStats, NatureElement, NaturalProgressBar, EcoButton, DetectionAnimation, SmartBinInterface classes)
+# IMPORTANT: These classes implicitly use the global SCREEN_WIDTH and SCREEN_HEIGHT
+# which are now correctly set to the fullscreen dimensions.
+# Ensure all internal positioning calculations within these classes rely on
+# SCREEN_WIDTH and SCREEN_HEIGHT rather than hardcoded values like 800 or 450.
+# The existing code seemed to do this correctly.
+
 class BinStats:
     def __init__(self):
         self.recycled_items = 0; self.landfill_items = 0; self.total_items = 0
@@ -199,51 +237,18 @@ class DetectionAnimation: # (logic unchanged, assuming border_radius removed fro
             p = self.particle_effects[i]; p["x"] += p["vx"]; p["y"] += p["vy"]; p["vy"] += 0.05; p["rotation"] += p["rot_speed"]; p["life"] -= 0.015
             if p["life"] <= 0:
                  if 0 <= i < len(self.particle_effects): self.particle_effects.pop(i)
-
-    def draw_particles(self, surface):
-        # <<< --- START OF CORRECTED BLOCK --- >>>
+    def draw_particles(self, surface): # (logic unchanged - previous fix applied)
         for p in self.particle_effects:
             try:
-                life_ratio = max(0, p.get('life', 0) / 1.0)
-                alpha = int(255 * min(1, life_ratio * 2))
+                life_ratio = max(0, p.get('life', 0) / 1.0); alpha = int(255 * min(1, life_ratio * 2))
                 if alpha <= 0: continue
-
-                particle_type = p.get("type")
-                size = p.get("size", 0)
+                particle_type = p.get("type"); size = p.get("size", 0)
                 if size <= 0: continue
-
-                if particle_type == "leaf":
-                    part_surf = pygame.Surface((size * 3, size * 2), pygame.SRCALPHA)
-                    color = (*p.get("color", LEAF_GREEN)[:3], alpha)
-                    pygame.draw.ellipse(part_surf, color, (0, 0, size * 2, size * 1.5))
-                    rotated_part = pygame.transform.rotate(part_surf, p.get("rotation", 0))
-                    part_rect = rotated_part.get_rect(center=(int(p.get("x", 0)), int(p.get("y", 0))))
-                    surface.blit(rotated_part, part_rect)
-                elif particle_type == "drop":
-                    part_surf = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
-                    color = (*p.get("color", WATER_BLUE)[:3], alpha)
-                    pygame.draw.circle(part_surf, color, (int(size), int(size)), int(size)) # Use int for radius and center
-                    part_rect = part_surf.get_rect(center=(int(p.get("x", 0)), int(p.get("y", 0))))
-                    surface.blit(part_surf, part_rect)
-                elif particle_type == "sparkle":
-                    color = (*p.get("color", SUNSET_ORANGE)[:3], alpha)
-                    center_x, center_y = int(p.get("x", 0)), int(p.get("y", 0))
-                    num_lines = 5
-                    rotation = p.get("rotation", 0)
-                    for i in range(num_lines):
-                        angle = rotation + i * (360 / num_lines)
-                        rad = math.radians(angle)
-                        end_x = center_x + math.cos(rad) * size * 1.5
-                        end_y = center_y + math.sin(rad) * size * 1.5
-                        pygame.draw.line(surface, color, (center_x, center_y), (int(end_x), int(end_y)), 1)
-
-            except (pygame.error, KeyError, TypeError, ValueError, AttributeError) as e:
-                # Print a more informative warning, then skip this particle for this frame
-                print(f"Warning: Error drawing particle (type: {p.get('type', 'unknown')}, life: {p.get('life', '?')}, error: {e}). Skipping draw.")
-                # Let update_particles handle the actual removal based on life later
-                continue # Move to the next particle in the draw loop
-        # <<< --- END OF CORRECTED BLOCK --- >>>
-
+                if particle_type == "leaf": part_surf = pygame.Surface((size * 3, size * 2), pygame.SRCALPHA); color = (*p.get("color", LEAF_GREEN)[:3], alpha); pygame.draw.ellipse(part_surf, color, (0, 0, size * 2, size * 1.5)); rotated_part = pygame.transform.rotate(part_surf, p.get("rotation", 0)); part_rect = rotated_part.get_rect(center=(int(p.get("x", 0)), int(p.get("y", 0)))); surface.blit(rotated_part, part_rect)
+                elif particle_type == "drop": part_surf = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA); color = (*p.get("color", WATER_BLUE)[:3], alpha); pygame.draw.circle(part_surf, color, (int(size), int(size)), int(size)); part_rect = part_surf.get_rect(center=(int(p.get("x", 0)), int(p.get("y", 0)))); surface.blit(part_surf, part_rect)
+                elif particle_type == "sparkle": color = (*p.get("color", SUNSET_ORANGE)[:3], alpha); center_x, center_y = int(p.get("x", 0)), int(p.get("y", 0)); num_lines = 5; rotation = p.get("rotation", 0)
+                for i in range(num_lines): angle = rotation + i * (360 / num_lines); rad = math.radians(angle); end_x = center_x + math.cos(rad) * size * 1.5; end_y = center_y + math.sin(rad) * size * 1.5; pygame.draw.line(surface, color, (center_x, center_y), (int(end_x), int(end_y)), 1)
+            except (pygame.error, KeyError, TypeError, ValueError, AttributeError) as e: print(f"Warning: Error drawing particle (type: {p.get('type', 'unknown')}, life: {p.get('life', '?')}, error: {e}). Skipping draw."); continue
     def draw(self, surface): # (logic unchanged, assuming border_radius removed if needed)
         if not self.item_image: return
         try:
@@ -272,7 +277,10 @@ class DetectionAnimation: # (logic unchanged, assuming border_radius removed fro
 class SmartBinInterface: # (logic unchanged)
     def __init__(self):
         self.stats = BinStats(); self.nature_elements = [NatureElement() for _ in range(15)]; self.state = "idle"; self.detection_animation = None
-        pb_width, pb_height = 140, 200; pb_y = SCREEN_HEIGHT // 2 - pb_height // 2 + 20; pb_x_margin = 180
+        # Use global SCREEN_WIDTH/HEIGHT for positioning
+        pb_width, pb_height = 140, 200
+        pb_y = SCREEN_HEIGHT // 2 - pb_height // 2 + 20
+        pb_x_margin = SCREEN_WIDTH * 0.22 # Relative margin
         self.recycling_progress = NaturalProgressBar(SCREEN_WIDTH // 2 - pb_x_margin - pb_width // 2, pb_y, pb_width, pb_height, LEAF_GREEN, LIGHT_CREAM, style="plant")
         self.landfill_progress = NaturalProgressBar(SCREEN_WIDTH // 2 + pb_x_margin - pb_width // 2, pb_y, pb_width, pb_height, WATER_BLUE, LIGHT_CREAM, style="water")
         self.recycling_progress.set_value(0); self.landfill_progress.set_value(0)
@@ -380,46 +388,37 @@ def simulate_detection(queue): # (logic unchanged)
     items = [{"name": "Plastic Bottle", "type": "RECYCLING"}, {"name": "Apple Core", "type": "TRASH"}, {"name": "Aluminum Can", "type": "RECYCLING"}, {"name": "Paper Towel", "type": "TRASH"}, {"name": "Newspaper", "type": "RECYCLING"}, {"name": "Coffee Cup", "type": "TRASH"}, {"name": "Glass Jar", "type": "RECYCLING"}]
     chosen_item = random.choice(items); print(f"\n--- SIMULATING DETECTION: {chosen_item['name']} ({chosen_item['type']}) ---"); queue.put(chosen_item)
 
-# --- NEW: Server Thread Function ---
+# --- Server Thread Function --- (Unchanged)
 def gui_server_thread(host, port, data_queue, running_flag_func):
-    """Listens for connections and puts received data into the queue."""
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         server_socket.bind((host, port))
         server_socket.listen(1)
         print(f"[Server Thread] Listening on {host}:{port}")
-        server_socket.settimeout(1.0) # Check running flag periodically
-
+        server_socket.settimeout(1.0)
         while running_flag_func():
             try:
                 conn, addr = server_socket.accept()
                 with conn:
                     print(f"[Server Thread] Accepted connection from {addr}")
                     data = b""
-                    while True: # Loop to receive potentially chunked data
+                    while True:
                         chunk = conn.recv(1024)
                         if not chunk: break
                         data += chunk
-                        # Basic check for end of JSON - improve if needed
                         if data.strip().endswith(b'}'): break
-
                     if data:
                         try:
-                            message_str = data.decode('utf-8')
-                            print(f"[Server Thread] Received raw data: {message_str}")
-                            detection_data = json.loads(message_str)
-                            print(f"[Server Thread] Parsed data: {detection_data}")
-                            if isinstance(detection_data, dict) and "type" in detection_data and "name" in detection_data:
-                                data_queue.put(detection_data)
-                                print("[Server Thread] Data added to queue.")
-                            else:
-                                print("[Server Thread] Warning: Received data is not in expected format.")
+                            message_str = data.decode('utf-8'); print(f"[Server Thread] Received raw data: {message_str}")
+                            detection_data = json.loads(message_str); print(f"[Server Thread] Parsed data: {detection_data}")
+                            if isinstance(detection_data, dict) and "type" in detection_data and "name" in detection_data: data_queue.put(detection_data); print("[Server Thread] Data added to queue.")
+                            else: print("[Server Thread] Warning: Received data is not in expected format.")
                         except json.JSONDecodeError as e: print(f"[Server Thread] Error decoding JSON: {e} - Data: {data.decode('utf-8', errors='ignore')}")
                         except UnicodeDecodeError as e: print(f"[Server Thread] Error decoding UTF-8: {e} - Raw data: {data}")
                         except Exception as e: print(f"[Server Thread] Error processing received data: {e}")
                     else: print("[Server Thread] Received empty data or connection closed early.")
-            except socket.timeout: continue # Normal, check running_flag again
+            except socket.timeout: continue
             except Exception as e: print(f"[Server Thread] Error accepting connection: {e}"); time.sleep(1)
     except Exception as e: print(f"[Server Thread] Error binding or listening: {e}")
     finally: print("[Server Thread] Shutting down..."); server_socket.close()
@@ -427,7 +426,7 @@ def gui_server_thread(host, port, data_queue, running_flag_func):
 # --- Main Function ---
 def main():
     global server_running
-    server_thread = None # Initialize server_thread variable
+    server_thread = None
     try:
         interface = SmartBinInterface()
         clock = pygame.time.Clock()
@@ -479,9 +478,8 @@ def main():
                     interface.draw_detection(screen)
             except Exception as draw_err:
                 print(f"Critical error during drawing: {draw_err}")
-                # Add more detail to the error message if possible
                 import traceback
-                traceback.print_exc() # Print full traceback for drawing errors
+                traceback.print_exc() # Print full traceback
 
                 screen.fill(CREAM)
                 try:
@@ -496,7 +494,7 @@ def main():
     except Exception as main_err:
         print(f"Critical error in main loop: {main_err}")
         import traceback
-        traceback.print_exc() # Print traceback for main loop errors too
+        traceback.print_exc() # Print traceback
     finally:
         print("Shutting down Pygame and Server...")
         server_running = False
