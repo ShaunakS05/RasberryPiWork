@@ -499,29 +499,66 @@ def simulate_detection(queue): # (Unchanged)
 
 # --- Server Thread Function --- (Unchanged)
 def gui_server_thread(host, port, data_queue, running_flag_func):
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM); server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    import socket, json, time  # Ensure required modules are imported
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    
     try:
-        server_socket.bind((host, port)); server_socket.listen(1); print(f"[Server Thread] Listening on {host}:{port}"); server_socket.settimeout(1.0)
+        server_socket.bind((host, port))
+        server_socket.listen(1)
+        print(f"[Server Thread] Listening on {host}:{port}")
+        server_socket.settimeout(1.0)
+        
         while running_flag_func():
             try:
                 conn, addr = server_socket.accept()
                 with conn:
-                    print(f"[Server Thread] Accepted connection from {addr}"); data = b""
-                    while True: chunk = conn.recv(1024)
-                    if not chunk: break; data += chunk
-                    if data.strip().endswith(b'}'): break
+                    print(f"[Server Thread] Accepted connection from {addr}")
+                    data = b""
+                    
+                    # Collect data in chunks until we either run out or detect the end of a JSON object
+                    while True:
+                        chunk = conn.recv(1024)
+                        if not chunk:
+                            break
+                        data += chunk
+                        if data.strip().endswith(b'}'):
+                            break
+                    
                     if data:
-                        try: message_str = data.decode('utf-8'); print(f"[Server Thread] Received raw data: {message_str}"); detection_data = json.loads(message_str); print(f"[Server Thread] Parsed data: {detection_data}")
-                        if isinstance(detection_data, dict) and "type" in detection_data and "name" in detection_data: data_queue.put(detection_data); print("[Server Thread] Data added to queue.")
-                        else: print("[Server Thread] Warning: Received data is not in expected format.")
-                        except json.JSONDecodeError as e: print(f"[Server Thread] Error decoding JSON: {e} - Data: {data.decode('utf-8', errors='ignore')}")
-                        except UnicodeDecodeError as e: print(f"[Server Thread] Error decoding UTF-8: {e} - Raw data: {data}")
-                        except Exception as e: print(f"[Server Thread] Error processing received data: {e}")
-                    else: print("[Server Thread] Received empty data or connection closed early.")
-            except socket.timeout: continue
-            except Exception as e: print(f"[Server Thread] Error accepting connection: {e}"); time.sleep(1)
-    except Exception as e: print(f"[Server Thread] Error binding or listening: {e}")
-    finally: print("[Server Thread] Shutting down..."); server_socket.close()
+                        try:
+                            message_str = data.decode('utf-8')
+                            print(f"[Server Thread] Received raw data: {message_str}")
+                            detection_data = json.loads(message_str)
+                            print(f"[Server Thread] Parsed data: {detection_data}")
+                            
+                            if (isinstance(detection_data, dict) and 
+                                "type" in detection_data and 
+                                "name" in detection_data):
+                                data_queue.put(detection_data)
+                                print("[Server Thread] Data added to queue.")
+                            else:
+                                print("[Server Thread] Warning: Received data is not in expected format.")
+                        except json.JSONDecodeError as e:
+                            print(f"[Server Thread] Error decoding JSON: {e} - Data: {data.decode('utf-8', errors='ignore')}")
+                        except UnicodeDecodeError as e:
+                            print(f"[Server Thread] Error decoding UTF-8: {e} - Raw data: {data}")
+                        except Exception as e:
+                            print(f"[Server Thread] Error processing received data: {e}")
+                    else:
+                        print("[Server Thread] Received empty data or connection closed early.")
+                        
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"[Server Thread] Error accepting connection: {e}")
+                time.sleep(1)
+                
+    except Exception as e:
+        print(f"[Server Thread] Error binding or listening: {e}")
+    finally:
+        print("[Server Thread] Shutting down...")
+        server_socket.close()
 
 # --- Main Function --- (Unchanged)
 def main():
