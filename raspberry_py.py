@@ -225,6 +225,7 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
     # Initialize variables that might be used in 'finally'
     classification_result = None
     item_name_result = "UNKNOWN ITEM" # Default name used for GUI and logic check
+    item_name_from_openai = "UNKNOWN" # Store the raw name from OpenAI
 
     try:
         save_path = image_path
@@ -238,9 +239,8 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
         save_success = cv2.imwrite(save_path, frame_to_process)
         if not save_success:
             print(f"Error: Failed to save image to {save_path}")
-            # Reset processing flag early if save fails
             is_processing = False
-            last_trigger_time = time.time() # Still update time to start cooldown
+            last_trigger_time = time.time()
             return # Exit processing
 
         print(f"Image captured and saved to {save_path}")
@@ -250,66 +250,76 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
 
         if result:
             # Unpack the full result tuple
-            # We need the original item_name for the Arduino check
             classification, is_smelly, smell_rating, volume_guess, item_name_from_openai = result
-            classification_result = classification
+            classification_result = classification # Store the primary classification
 
-            # Use the specific name from OpenAI for the Arduino check,
-            # but potentially use a more generic name for the GUI if needed.
+            # Determine the name to use (primarily for GUI, but keep raw name too)
             item_name_result = item_name_from_openai if item_name_from_openai not in ["UNKNOWN", "IGNORE"] else "DETECTED ITEM"
 
-            print(f"Debug: OpenAI Raw Item Name: '{item_name_from_openai}', Result Name Used: '{item_name_result}'") # Debug print
+            print(f"Debug: OpenAI Classification: '{classification_result}', Raw Item Name: '{item_name_from_openai}', Result Name Used: '{item_name_result}'")
 
             # --- Send result to GUI ---
-            # GUI gets sent regardless of the item name, as long as it's T/R
+            # GUI still gets sent only for TRASH/RECYCLING classifications
             if classification_result in ["TRASH", "RECYCLING"]:
                 detection_data = {
                     "type": classification_result,
-                    "name": item_name_result # Send the potentially modified name
+                    "name": item_name_result
                 }
-                # Consider running send_to_gui in a thread if it blocks
                 send_to_gui(detection_data)
             # --------------------------
 
         else:
-            print("Analysis resulted in IGNORE or an error. No command sent to Arduino or GUI.")
-            # Ensure classification_result is None or "IGNORE" if analysis fails/ignored
-            classification_result = "IGNORE" # Explicitly set state
-            item_name_result = "IGNORE"      # Explicitly set state
+            print("Analysis resulted in IGNORE or an error. Applying IGNORE logic for Arduino.")
+            # Set classification specifically to IGNORE if analysis failed or returned None explicitly
+            # This ensures the 'finally' block handles it correctly according to the new rule.
+            classification_result = "IGNORE"
+            item_name_result = "IGNORE" # Keep consistent
 
 
     except Exception as e:
         print(f"Error during frame processing or OpenAI analysis step: {e}")
         import traceback
-        traceback.print_exc() # Print full error details
+        traceback.print_exc()
         classification_result = "ERROR" # Mark as error state
         item_name_result = "ERROR"
 
     finally:
-        # --- Send command to Arduino (with CARDBOARD BOX exception) ---
+        # --- Determine Arduino Command based on new rules ---
 
-        # Conditions to send command:
-        # 1. Classification must be TRASH or RECYCLING
-        # 2. Item name result must NOT be 'CARDBOARD BOX' (case-insensitive check recommended)
-        # 3. Arduino serial must be available and open
-
-        send_command_to_arduino = False # Flag to decide if we should send
+        send_command_to_arduino = False
         command_to_send = None
 
-        if classification_result in ["TRASH", "RECYCLING"]:
-            # Check item name against "CARDBOARD BOX" (case-insensitive)
+        # Rule 1: Handle TRASH classification
+        if classification_result == "TRASH":
+             # Optional: Keep cardboard check even for trash? Unlikely to be needed.
+             # if item_name_result.upper() != "CARDBOARD BOX":
+             send_command_to_arduino = True
+             command_to_send = 'T\n'
+             # else:
+             #     print(f"Item classified as TRASH but name is '{item_name_result}'. Skipping Arduino command.")
+
+        # Rule 2: Handle RECYCLING classification (with cardboard exception)
+        elif classification_result == "RECYCLING":
             if item_name_result.upper() != "CARDBOARD BOX":
                 send_command_to_arduino = True
-                command_to_send = 'T\n' if classification_result == "TRASH" else 'R\n'
+                command_to_send = 'R\n'
             else:
-                # Item IS a cardboard box, explicitly state we are skipping Arduino
-                print(f"Item identified as '{item_name_result}'. Skipping Arduino command.")
-        else:
-             # Classification was IGNORE, ERROR, or None
+                # This is the specific CARDBOARD BOX exception for RECYCLING
+                print(f"Item identified as '{item_name_result}' (Recycling). Skipping Arduino command.")
+                # command remains None, send_command flag remains False
+
+        # Rule 3: Handle IGNORE classification -> Treat as TRASH for Arduino
+        elif classification_result == "IGNORE":
+            print(f"Classification is 'IGNORE'. Treating as TRASH for Arduino command.")
+            send_command_to_arduino = True
+            command_to_send = 'T\n'
+
+        # Rule 4: Handle ERROR or other unexpected states
+        else: # Covers ERROR, None (if somehow it gets here), or UNKNOWN
              print(f"Classification is '{classification_result}'. No command sent to Arduino.")
 
 
-        # Proceed only if all conditions met
+        # --- Execute Sending Logic ---
         if send_command_to_arduino and command_to_send:
             if ser and ser.is_open:
                 try:
@@ -323,6 +333,13 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
             else:
                 # Conditions met, but serial port isn't ready
                 print(f"Cannot send command '{command_to_send.strip()}': Arduino serial port not available.")
+        elif command_to_send is None and classification_result == "RECYCLING" and item_name_result.upper() == "CARDBOARD BOX":
+            # This case was handled above by printing the skip message, do nothing here.
+            pass
+        else:
+            # Covers cases where send_command_to_arduino is False for other reasons (ERROR, etc.)
+            # The message for these cases was printed in the rule checks above.
+            pass
         # -----------------------------
 
         # Reset processing flag and update trigger time regardless of command sending
