@@ -501,7 +501,7 @@ def live_feed_and_detect(image_path="item_capture.jpg"):
 
             # Show the frame (optional, can be disabled for headless operation)
             try:
-                cv2.imshow(display_window_name, display_frame)
+              #  cv2.imshow(display_window_name, display_frame)
             except cv2.error as e:
                  # Handle cases where display might fail (e.g., no graphical environment)
                  print(f"Warning: Could not display window ({display_window_name}): {e}. Check if GUI environment is available.")
