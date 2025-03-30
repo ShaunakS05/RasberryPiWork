@@ -6,6 +6,7 @@ import threading
 import time
 from openai import OpenAI
 from dotenv import load_dotenv
+from collections import Counter # Import Counter
 
 # --- (Keep all the previous imports and global variable definitions) ---
 load_dotenv()
@@ -17,13 +18,23 @@ CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
            "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
            "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
            "sofa", "train", "tvmonitor"]
-IGNORE_CLASSES = {"person"}
+IGNORE_CLASSES = {"person"} # Don't analyze people
 current_frame = None
 is_processing = False
-object_present_previously = False
+# Renaming for clarity: tracks if a *new* object was present in the last processed frame
+new_object_present_previously = False
 last_trigger_time = 0
-cooldown_period = 5
-net = cv2.dnn.readNetFromCaffe(model_proto, model_weights)
+cooldown_period = 5 # Cooldown in seconds
+
+# Load the DNN model once
+try:
+    net = cv2.dnn.readNetFromCaffe(model_proto, model_weights)
+    print("MobileNet SSD model loaded successfully.")
+except cv2.error as e:
+    print(f"Error loading DNN model: {e}")
+    print("Ensure the model files ('MobileNetSSD_deploy.prototxt.txt' and 'MobileNetSSD_deploy.caffemodel') are in the correct directory.")
+    exit()
+
 # --- (Keep encode_image, ask_chatgpt, process_capture functions as they are) ---
 
 # << Functions encode_image, ask_chatgpt, process_capture go here - unchanged >>
@@ -39,7 +50,7 @@ def ask_chatgpt(image_path):
         imageDecoded = encode_image(image_path)
 
         response = client.chat.completions.create(
-            model="gpt-4-turbo", # Or "gpt-4-vision-preview" if turbo doesn't work well
+            model="gpt-4-turbo", # Or "gpt-4-vision-preview"
             messages=[
                 {
                     "role": "user",
@@ -47,6 +58,7 @@ def ask_chatgpt(image_path):
                         {
                             "type": "text",
                             "text": (
+                                # ... (Keep the detailed prompt as before) ...
                                 "You are a trashcan vision assistant.\n"
                                 "Look at this object and determine if it is a common piece of trash or recycling.\n"
                                 "If it is NOT trash/recycling (e.g., a person, hand, background view), respond ONLY with:\n"
@@ -78,10 +90,11 @@ def ask_chatgpt(image_path):
                     ]
                 }
             ],
-            max_tokens=100, # Increased slightly for potentially longer item names/robustness
+            max_tokens=100,
         )
 
         response_text = response.choices[0].message.content.strip()
+        # ... (Keep the response parsing logic as before) ...
         print("--- GPT-4V Raw Response ---")
         print(response_text)
         print("--------------------------")
@@ -127,6 +140,7 @@ def ask_chatgpt(image_path):
         print("→ Estimated volume (cm^3):", volume_guess)
         print("→ Item:", item_name)
 
+        # ... (Keep smell rating print logic as before) ...
         if smell_rating >= 7:
             print("Trash contains object that is very smelly")
         elif smell_rating >= 4:
@@ -138,8 +152,6 @@ def ask_chatgpt(image_path):
         else:
             print("Smell rating could not be determined")
 
-        # Here you would add logic to ACT on the classification
-        # e.g., control servo motors for sorting, update database, etc.
 
         return classification, is_smelly, smell_rating, volume_guess, item_name
 
@@ -148,35 +160,29 @@ def ask_chatgpt(image_path):
         return None # Indicate error/ignore
 
 def process_capture(frame_to_process, image_path="item_capture.jpg"):
-    # Saves the specific frame passed to it and processes it with ask_chatgpt
     global is_processing, last_trigger_time
-    print("Processing captured frame...")
+    print("Processing captured frame for new object...")
     try:
-        # Save the frame *before* potentially slow analysis
-        save_path = image_path # Use the provided path directly
+        save_path = image_path
         cv2.imwrite(save_path, frame_to_process)
         print(f"Image captured and saved to {save_path}")
-
-        # Call ask_chatgpt
         result = ask_chatgpt(save_path)
         if result:
-            # Optional: do something with the results here if needed
             pass
         else:
             print("Analysis resulted in IGNORE or an error.")
-
     except Exception as e:
         print(f"Error during frame processing or saving: {e}")
     finally:
-        # Ensure processing flag is reset and record time
         is_processing = False
         last_trigger_time = time.time()
+        # Don't reset new_object_present_previously here, reset it in the main loop
         print("Processing finished. Ready for new detection.")
 
 
 # --- MODIFIED FUNCTION ---
 def live_feed_and_detect(image_path="item_capture.jpg"):
-    global current_frame, is_processing, object_present_previously, last_trigger_time
+    global current_frame, is_processing, new_object_present_previously, last_trigger_time
 
     cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
     if not cap.isOpened():
@@ -185,43 +191,75 @@ def live_feed_and_detect(image_path="item_capture.jpg"):
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    # Optional: Try setting FPS lower IF the camera supports it reliably
-    # cap.set(cv2.CAP_PROP_FPS, 15)
+    # cap.set(cv2.CAP_PROP_FPS, 15) # Optional
 
-    print("Starting live feed and object detection...")
-    print("Looking for non-ignored objects. Press 'q' to quit.")
+    print("Camera opened. Allowing time for adjustments...")
+    time.sleep(2.0) # Give camera time to stabilize auto-exposure/focus
 
-    # --- Frame Skipping Variables ---
+    # --- Background Initialization ---
+    print("Capturing initial background view...")
+    initial_object_classes = set()
+    initial_frames_to_scan = 15 # Number of frames to scan for initial objects
+    initial_detections = Counter() # Count detections over initial frames
+
+    for _ in range(initial_frames_to_scan):
+        ret, frame = cap.read()
+        if not ret:
+            continue # Skip if frame grab failed
+
+        (h, w) = frame.shape[:2]
+        blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
+        net.setInput(blob)
+        detections = net.forward()
+
+        for i in np.arange(0, detections.shape[2]):
+            confidence = detections[0, 0, i, 2]
+            if confidence > confidence_threshold:
+                idx = int(detections[0, 0, i, 1])
+                if idx < len(CLASSES) and CLASSES[idx] != "background" and CLASSES[idx] not in IGNORE_CLASSES:
+                    initial_detections[CLASSES[idx]] += 1
+
+        time.sleep(0.05) # Small delay between initial scans
+
+    # Determine stable background objects (present in > half the initial scans)
+    detection_threshold = initial_frames_to_scan // 2
+    for obj_class, count in initial_detections.items():
+        if count > detection_threshold:
+            initial_object_classes.add(obj_class)
+
+    if initial_object_classes:
+        print(f"Initial background objects identified: {', '.join(initial_object_classes)}")
+    else:
+        print("Initial view appears empty or contains only ignored objects.")
+    print("Starting continuous monitoring for *new* objects...")
+    # --- End Background Initialization ---
+
+
     frame_counter = 0
-    process_every_n_frames = 5  # <<< ADJUST THIS VALUE (Higher = less CPU, slower detection)
-                                 # Start with 5, increase if still laggy (e.g., 10, 15)
-                                 # Decrease if detection feels too slow (e.g., 3)
-
-    last_detection_boxes = [] # Store last drawn boxes
+    process_every_n_frames = 5 # Keep frame skipping for performance
+    last_detection_boxes = []
 
     while True:
         ret, frame = cap.read()
         if not ret:
             print("Failed to grab frame")
-            time.sleep(0.1) # Brief pause before retrying
+            time.sleep(0.1)
             continue
 
-        current_frame = frame.copy() # Keep a clean copy
-        display_frame = frame # Frame to draw on and show
+        current_frame = frame.copy()
+        display_frame = frame
 
         frame_counter += 1
 
-        # --- Only process every N frames ---
         if frame_counter % process_every_n_frames == 0:
             (h, w) = frame.shape[:2]
             blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
-
             net.setInput(blob)
             detections = net.forward()
 
-            object_detected_this_frame = False
+            detected_new_object_this_frame = False # Flag specifically for *new* objects
             ignore_object_detected = False
-            current_detection_boxes = [] # Boxes for *this* processed frame
+            current_detection_boxes = []
 
             for i in np.arange(0, detections.shape[2]):
                 confidence = detections[0, 0, i, 2]
@@ -232,53 +270,60 @@ def live_feed_and_detect(image_path="item_capture.jpg"):
                     (startX, startY, endX, endY) = box.astype("int")
 
                     label = "Unknown"
-                    color = (0, 255, 255) # Default Yellow
+                    color = (0, 255, 255)
+                    is_new = False
 
                     if idx < len(CLASSES):
-                        label = CLASSES[idx]
-                        if label in IGNORE_CLASSES:
+                        detected_class = CLASSES[idx]
+
+                        if detected_class == "background":
+                            continue # Skip background
+
+                        if detected_class in IGNORE_CLASSES:
                             ignore_object_detected = True
                             color = (0, 0, 255) # Red for ignored
-                            display_label = f"Ignoring: {label} ({confidence:.2f})"
-                            print(f"Ignoring detected: {label}") # Print only when processing
-                        elif label != "background":
-                            object_detected_this_frame = True
-                            color = (0, 255, 0) # Green for potential target
-                            display_label = f"Detected: {label} ({confidence:.2f})"
-                            print(f"Potential target detected: {label}") # Print only when processing
+                            display_label = f"Ignoring: {detected_class}"
+                            # Don't break, check all detections for ignored objects
+                        # Check if it's NOT ignored AND NOT part of the initial background
+                        elif detected_class not in initial_object_classes:
+                            detected_new_object_this_frame = True
+                            is_new = True
+                            color = (0, 255, 0) # Green for *new* target
+                            display_label = f"NEW: {detected_class}"
                         else:
-                            # Skip background detections entirely
-                            continue
+                            # It's detected, but was part of the initial background
+                            color = (255, 150, 0) # Orange for background object
+                            display_label = f"BG: {detected_class}"
                     else:
-                         # Skip detections with index out of bounds
-                         continue
+                        continue # Skip invalid class index
 
-                    # Add box and label info to list for drawing
+                    # Append box info for drawing
                     current_detection_boxes.append({
                         "box": (startX, startY, endX, endY),
-                        "label": display_label,
+                        "label": f"{display_label} ({confidence:.2f})",
                         "color": color
                     })
 
-            # Update the boxes to display
+            # Update boxes for display
             last_detection_boxes = current_detection_boxes
 
-            # --- Triggering Logic (only checked when processing frames) ---
-            trigger_condition = object_detected_this_frame and not ignore_object_detected
+            # --- Triggering Logic (Based on *NEW* objects) ---
+            trigger_condition = detected_new_object_this_frame and not ignore_object_detected
             now = time.time()
 
-            if trigger_condition and not is_processing and not object_present_previously and (now - last_trigger_time > cooldown_period):
-                print("--- Valid Object Detected! Triggering Analysis ---")
+            # Trigger if a NEW object detected, not processing, wasn't just seen, and cooldown passed
+            if trigger_condition and not is_processing and not new_object_present_previously and (now - last_trigger_time > cooldown_period):
+                print(f"--- New Object ({display_label.split(' ')[1]}) Detected! Triggering Analysis ---") # More specific print
                 is_processing = True
-                object_present_previously = True
-                frame_to_analyze = current_frame # Use the clean frame copy
+                new_object_present_previously = True # Mark that a new object is now present
+                frame_to_analyze = current_frame
                 threading.Thread(target=process_capture, args=(frame_to_analyze, image_path)).start()
 
-            if not trigger_condition:
-                object_present_previously = False # Reset if no valid object found *in this processed frame*
+            # If no *new* object was detected in this processed frame, reset the flag
+            if not detected_new_object_this_frame:
+                new_object_present_previously = False
 
-        # --- Drawing Bounding Boxes (Draw last known boxes on *every* frame) ---
-        # This makes the display feel more responsive even if detection is skipped
+        # --- Drawing Bounding Boxes (on every frame using last known boxes) ---
         for detection in last_detection_boxes:
             (startX, startY, endX, endY) = detection["box"]
             label = detection["label"]
