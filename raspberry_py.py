@@ -9,13 +9,6 @@ import socket # For sending data to GUI
 import json   # For formatting data to send
 from openai import OpenAI
 from dotenv import load_dotenv
-from pymongo import MongoClient
-from datetime import datetime
-from bson.objectid import ObjectId
-
-client = MongoClient('mongodb+srv://nyanprak:Samprakash3!@trash.utmo5ml.mongodb.net/?retryWrites=true&w=majority&appName=trash')
-db = client['trash_management_db']
-collection = db['trash_cans']
 
 # --- Configuration ---
 load_dotenv()
@@ -118,6 +111,7 @@ def ask_chatgpt(image_path):
                                 "Look at this image, which was captured because motion or change was detected.\n"
                                 "Determine if the primary changing object is a common piece of trash or recycling.\n"
                                 "If it is NOT trash/recycling (e.g., a person, hand entering/leaving, significant lighting change, empty view after object removed), respond ONLY with:\n"
+                                "For your information, the ground that you are on is made out of cardboard. Please disregard any classification of a cardboard box. Only focus on objects that appear on top of the cardboard.\n"
                                 "Classification: IGNORE\n"
                                 "Smelly: NO\n"
                                 "Smell Rating: 0\n"
@@ -264,24 +258,6 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
             item_name_result = item_name_from_openai if item_name_from_openai not in ["UNKNOWN", "IGNORE"] else "DETECTED ITEM"
 
             print(f"Debug: OpenAI Classification: '{classification_result}', Raw Item Name: '{item_name_from_openai}', Result Name Used: '{item_name_result}'")
-
-
-            new_item_id = f"item-(uuid.uuid4().hex[:8])"
-
-            new_item = {
-                "id": new_item_id,
-                "type": classification_result,
-                "name": item_name_result,
-                "timestamp": datetime.now().isoformat()
-                }
-
-            our_trash_id = ObjectId("67e90d1dc1ede39d902e351f")
-            result = collection.update_one(
-                {"_id": our_trash_id},
-                {"$push": {"items": new_item}}
-            )
-
-
 
             # --- Send result to GUI ---
             # GUI still gets sent only for TRASH/RECYCLING classifications
