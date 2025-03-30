@@ -11,15 +11,6 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 
-from pymongo import MongoClient
-from datetime import datetime
-import uuid
-from bson.objectid import ObjectId
-
-# Connect to MongoDB
-client = MongoClient('mongodb+srv://nyanprak:Samprakash3!@trash.utmo5ml.mongodb.net/?retryWrites=true&w=majority&appName=trash')
-db = client['trash_management_db']
-collection = db['trash_cans']
 
 # --- Configuration ---
 load_dotenv()
@@ -348,23 +339,7 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
     # --- Database Update (Skip if Cardboard, IGNORE, or ERROR) ---
     if not is_cardboard_box and classification_result not in ["IGNORE", "ERROR", None]:
         try:
-            # Generate a unique ID for the new item
-            new_item_id = f"item-{uuid.uuid4().hex[:8]}"
 
-            # Create the new item
-            new_item = {
-                "id": new_item_id,
-                "type": classification_result, # Use the final classification
-                "name": item_name_result,     # Use the determined item name
-                "timestamp": datetime.now().isoformat()
-            }
-
-            # Add the item to the array using the $push operator
-            trash_can_id = "67e90d1dc1ede39d902e351a" # Ensure this ID is correct!
-            result = collection.update_one(
-                {"_id": ObjectId(trash_can_id)},
-                {"$push": {"items": new_item}}
-            )
             if result.modified_count > 0:
                  print(f"Logged item '{item_name_result}' ({classification_result}) to database.")
             else:
