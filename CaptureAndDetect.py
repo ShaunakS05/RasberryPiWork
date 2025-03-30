@@ -7,60 +7,33 @@ import time
 from openai import OpenAI
 from dotenv import load_dotenv
 
+# --- (Keep all the previous imports and global variable definitions) ---
 load_dotenv()
-
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# --- Configuration ---
-# Paths to the DNN model files (adjust if placed elsewhere)
 model_proto = "MobileNetSSD_deploy.prototxt.txt"
 model_weights = "MobileNetSSD_deploy.caffemodel"
-# Confidence threshold for detection
-confidence_threshold = 0.4 # Adjust as needed (0.2-0.5 is common)
-
-# Object classes provided by MobileNet SSD
+confidence_threshold = 0.4
 CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
            "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
            "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
            "sofa", "train", "tvmonitor"]
-
-# --- Define Target and Ignore Classes ---
-# Objects we WANT to classify with OpenAI
-TARGET_CLASSES = {"bottle", "cup", "can", "box"} # Add relevant classes if the model supports them (MobileNetSSD is limited)
-# Note: MobileNetSSD might not have 'can', 'cup', 'box'. 'bottle' is present.
-# You might need a different model for better trash detection or rely on GPT-4V
-# identifying these from the image even if the local model doesn't explicitly label them.
-# For now, we'll use 'bottle' as an example target. If *any* non-ignored object
-# is detected, we can still send it to GPT-4V to decide. Let's refine this:
-# Trigger if *any* object *other than* an ignored one is detected.
-IGNORE_CLASSES = {"person"} # Objects we DON'T want to classify
-
-# --- Global Variables ---
+IGNORE_CLASSES = {"person"}
 current_frame = None
-is_processing = False # Flag to prevent multiple simultaneous OpenAI calls
-object_present_previously = False # State flag for triggering
+is_processing = False
+object_present_previously = False
 last_trigger_time = 0
-cooldown_period = 5 # Seconds to wait after processing before allowing another trigger
+cooldown_period = 5
+net = cv2.dnn.readNetFromCaffe(model_proto, model_weights)
+# --- (Keep encode_image, ask_chatgpt, process_capture functions as they are) ---
 
-# --- Load the DNN Model ---
-try:
-    net = cv2.dnn.readNetFromCaffe(model_proto, model_weights)
-    print("MobileNet SSD model loaded successfully.")
-except cv2.error as e:
-    print(f"Error loading DNN model: {e}")
-    print("Ensure the model files ('MobileNetSSD_deploy.prototxt.txt' and 'MobileNetSSD_deploy.caffemodel') are in the correct directory.")
-    exit()
-
-# --- Functions ---
-
+# << Functions encode_image, ask_chatgpt, process_capture go here - unchanged >>
+# Function to convert image file to base64
 def encode_image(image_path):
-    # Function to convert image file to base64
     with open(image_path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
 
+# Function to call the OpenAI API and classify the captured image
 def ask_chatgpt(image_path):
-    # Function to call the OpenAI API and classify the captured image
-    # (Same as your original function, just called from process_capture)
     print(f"→ Analyzing image: {image_path}")
     try:
         imageDecoded = encode_image(image_path)
@@ -179,10 +152,13 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
     global is_processing, last_trigger_time
     print("Processing captured frame...")
     try:
-        cv2.imwrite(image_path, frame_to_process)
-        print(f"Image captured and saved to {image_path}")
+        # Save the frame *before* potentially slow analysis
+        save_path = image_path # Use the provided path directly
+        cv2.imwrite(save_path, frame_to_process)
+        print(f"Image captured and saved to {save_path}")
+
         # Call ask_chatgpt
-        result = ask_chatgpt(image_path)
+        result = ask_chatgpt(save_path)
         if result:
             # Optional: do something with the results here if needed
             pass
@@ -198,103 +174,121 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
         print("Processing finished. Ready for new detection.")
 
 
+# --- MODIFIED FUNCTION ---
 def live_feed_and_detect(image_path="item_capture.jpg"):
     global current_frame, is_processing, object_present_previously, last_trigger_time
 
-    cap = cv2.VideoCapture(0, cv2.CAP_V4L2) # Use V4L2 backend
+    cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
     if not cap.isOpened():
         print("Cannot open camera")
         return
 
-    # Set desired resolution (lower is faster)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    # Optional: Lower frame rate if needed
+    # Optional: Try setting FPS lower IF the camera supports it reliably
     # cap.set(cv2.CAP_PROP_FPS, 15)
 
     print("Starting live feed and object detection...")
     print("Looking for non-ignored objects. Press 'q' to quit.")
 
+    # --- Frame Skipping Variables ---
+    frame_counter = 0
+    process_every_n_frames = 5  # <<< ADJUST THIS VALUE (Higher = less CPU, slower detection)
+                                 # Start with 5, increase if still laggy (e.g., 10, 15)
+                                 # Decrease if detection feels too slow (e.g., 3)
+
+    last_detection_boxes = [] # Store last drawn boxes
+
     while True:
         ret, frame = cap.read()
         if not ret:
             print("Failed to grab frame")
-            time.sleep(0.5) # Wait a bit before retrying
+            time.sleep(0.1) # Brief pause before retrying
             continue
 
-        current_frame = frame.copy() # Keep a copy of the latest frame
-        (h, w) = frame.shape[:2]
+        current_frame = frame.copy() # Keep a clean copy
+        display_frame = frame # Frame to draw on and show
 
-        # Preprocess the frame for the DNN
-        blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
+        frame_counter += 1
 
-        # Set the blob as input to the network and perform inference
-        net.setInput(blob)
-        detections = net.forward()
+        # --- Only process every N frames ---
+        if frame_counter % process_every_n_frames == 0:
+            (h, w) = frame.shape[:2]
+            blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
 
-        object_detected_this_frame = False
-        ignore_object_detected = False
-        detected_object_frame = None # Store the frame when a relevant object is detected
+            net.setInput(blob)
+            detections = net.forward()
 
-        # Loop over the detections
-        for i in np.arange(0, detections.shape[2]):
-            confidence = detections[0, 0, i, 2]
+            object_detected_this_frame = False
+            ignore_object_detected = False
+            current_detection_boxes = [] # Boxes for *this* processed frame
 
-            # Filter out weak detections
-            if confidence > confidence_threshold:
-                idx = int(detections[0, 0, i, 1])
+            for i in np.arange(0, detections.shape[2]):
+                confidence = detections[0, 0, i, 2]
 
-                # Check if the detected class is in IGNORE_CLASSES
-                if idx < len(CLASSES) and CLASSES[idx] in IGNORE_CLASSES:
-                   ignore_object_detected = True
-                   print(f"Ignoring detected: {CLASSES[idx]}")
-                   # Draw box for ignored object (optional visualization)
-                   box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-                   (startX, startY, endX, endY) = box.astype("int")
-                   cv2.rectangle(frame, (startX, startY), (endX, endY), (0, 0, 255), 2) # Red box
-                   label = f"Ignoring: {CLASSES[idx]} ({confidence:.2f})"
-                   cv2.putText(frame, label, (startX, startY - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                   # Don't break here, we want to see if *any* ignored object is present
-
-                # Check if the detected class is *not* background and *not* ignored
-                # This means it's a potential target object
-                elif idx < len(CLASSES) and CLASSES[idx] != "background": # Removed specific TARGET_CLASSES check
-                    object_detected_this_frame = True
-                    detected_object_label = CLASSES[idx]
-                    print(f"Potential target detected: {detected_object_label}")
-                    # Draw box for potential target object (optional visualization)
+                if confidence > confidence_threshold:
+                    idx = int(detections[0, 0, i, 1])
                     box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
                     (startX, startY, endX, endY) = box.astype("int")
-                    cv2.rectangle(frame, (startX, startY), (endX, endY), (0, 255, 0), 2) # Green box
-                    label = f"Detected: {CLASSES[idx]} ({confidence:.2f})"
-                    cv2.putText(frame, label, (startX, startY - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                    # We'll trigger based on this detection *unless* an ignored object was also found
 
-        # --- Triggering Logic ---
-        # Check if a potential target was found AND no ignored object was detected
-        trigger_condition = object_detected_this_frame and not ignore_object_detected
+                    label = "Unknown"
+                    color = (0, 255, 255) # Default Yellow
 
-        # Get current time
-        now = time.time()
+                    if idx < len(CLASSES):
+                        label = CLASSES[idx]
+                        if label in IGNORE_CLASSES:
+                            ignore_object_detected = True
+                            color = (0, 0, 255) # Red for ignored
+                            display_label = f"Ignoring: {label} ({confidence:.2f})"
+                            print(f"Ignoring detected: {label}") # Print only when processing
+                        elif label != "background":
+                            object_detected_this_frame = True
+                            color = (0, 255, 0) # Green for potential target
+                            display_label = f"Detected: {label} ({confidence:.2f})"
+                            print(f"Potential target detected: {label}") # Print only when processing
+                        else:
+                            # Skip background detections entirely
+                            continue
+                    else:
+                         # Skip detections with index out of bounds
+                         continue
 
-        # If we detect a valid object, and we weren't already processing,
-        # and the object wasn't present just before (rising edge),
-        # and enough time has passed since the last trigger (cooldown)
-        if trigger_condition and not is_processing and not object_present_previously and (now - last_trigger_time > cooldown_period) :
-            print("--- Valid Object Detected! Triggering Analysis ---")
-            is_processing = True # Set flag immediately
-            object_present_previously = True # Mark object as present now
-            # Use the frame where the detection occurred
-            frame_to_analyze = current_frame # Use the clean frame copy
-            # Start processing in a separate thread to keep the feed responsive
-            threading.Thread(target=process_capture, args=(frame_to_analyze, image_path)).start()
+                    # Add box and label info to list for drawing
+                    current_detection_boxes.append({
+                        "box": (startX, startY, endX, endY),
+                        "label": display_label,
+                        "color": color
+                    })
 
-        # If no valid object is detected currently, reset the 'present' flag
-        if not trigger_condition:
-            object_present_previously = False
+            # Update the boxes to display
+            last_detection_boxes = current_detection_boxes
+
+            # --- Triggering Logic (only checked when processing frames) ---
+            trigger_condition = object_detected_this_frame and not ignore_object_detected
+            now = time.time()
+
+            if trigger_condition and not is_processing and not object_present_previously and (now - last_trigger_time > cooldown_period):
+                print("--- Valid Object Detected! Triggering Analysis ---")
+                is_processing = True
+                object_present_previously = True
+                frame_to_analyze = current_frame # Use the clean frame copy
+                threading.Thread(target=process_capture, args=(frame_to_analyze, image_path)).start()
+
+            if not trigger_condition:
+                object_present_previously = False # Reset if no valid object found *in this processed frame*
+
+        # --- Drawing Bounding Boxes (Draw last known boxes on *every* frame) ---
+        # This makes the display feel more responsive even if detection is skipped
+        for detection in last_detection_boxes:
+            (startX, startY, endX, endY) = detection["box"]
+            label = detection["label"]
+            color = detection["color"]
+            cv2.rectangle(display_frame, (startX, startY), (endX, endY), color, 2)
+            y = startY - 15 if startY - 15 > 15 else startY + 15
+            cv2.putText(display_frame, label, (startX, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         # --- Display the frame ---
-        cv2.imshow("Live Feed - Object Detection", frame)
+        cv2.imshow("Live Feed - Object Detection", display_frame)
 
         # --- Handle Quit ---
         key = cv2.waitKey(1) & 0xFF
@@ -309,9 +303,8 @@ def live_feed_and_detect(image_path="item_capture.jpg"):
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    # Check if model files exist before starting
     if not os.path.exists(model_proto) or not os.path.exists(model_weights):
         print(f"Error: Model files not found.")
         print(f"Please ensure '{model_proto}' and '{model_weights}' are in the script's directory.")
     else:
-        live_feed_and_detect("item_capture.jpg") # Pass the desired filename
+        live_feed_and_detect("item_capture.jpg")
