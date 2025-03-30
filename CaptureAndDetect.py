@@ -6,7 +6,6 @@ import threading
 import time
 from openai import OpenAI
 from dotenv import load_dotenv
-# No need for Counter anymore for background init
 
 # --- Configuration ---
 load_dotenv()
@@ -19,7 +18,7 @@ CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
            "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
            "sofa", "train", "tvmonitor"] # Still needed for ignore check
 IGNORE_CLASSES = {"person"} # Critical to prevent triggering on people
-analysis_delay = 1.5  # Seconds the change must persist
+analysis_delay = 1.5  # <<< Seconds the change must persist
 process_every_n_frames = 3 # Can likely process more frames now (BG sub is faster)
 cooldown_period = 5 # Seconds after analysis
 min_contour_area = 500 # <<< ADJUST: Minimum pixel area to consider as significant change (tune this!)
@@ -36,17 +35,17 @@ try:
     print("MobileNet SSD model loaded (for ignore check).")
 except cv2.error as e:
     print(f"Error loading DNN model: {e}")
+    print("Ensure the model files ('MobileNetSSD_deploy.prototxt.txt' and 'MobileNetSSD_deploy.caffemodel') are in the correct directory.")
     exit()
 
 # --- Background Subtractor ---
 # history=500: How many frames used for modeling background
-# varThreshold=16: Threshold on the squared Mahalanobis distance to decide if pixel is foreground
-# detectShadows=True: Detect and mark shadows (we'll filter them out)
-backSub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=30, detectShadows=True) # Tune varThreshold if needed
+# varThreshold=30: Threshold sensitivity (lower means more sensitive to change)
+# detectShadows=True: Detect and mark shadows (we filter them out)
+backSub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=30, detectShadows=True)
 
-# --- (Keep encode_image, ask_chatgpt, process_capture functions as they are) ---
+# --- Helper Functions ---
 
-# << Functions encode_image, ask_chatgpt, process_capture go here - unchanged >>
 # Function to convert image file to base64
 def encode_image(image_path):
     with open(image_path, "rb") as f:
@@ -59,7 +58,7 @@ def ask_chatgpt(image_path):
         imageDecoded = encode_image(image_path)
 
         response = client.chat.completions.create(
-            model="gpt-4-turbo", # Or "gpt-4-vision-preview"
+            model="gpt-4-turbo", # Or "gpt-4-vision-preview" if turbo struggles
             messages=[
                 {
                     "role": "user",
@@ -67,11 +66,10 @@ def ask_chatgpt(image_path):
                         {
                             "type": "text",
                             "text": (
-                                # The prompt remains the same - asking GPT-4V to classify or ignore
                                 "You are a trashcan vision assistant.\n"
                                 "Look at this image, which was captured because motion or change was detected.\n"
                                 "Determine if the primary changing object is a common piece of trash or recycling.\n"
-                                "If it is NOT trash/recycling (e.g., a person, hand, significant lighting change, empty view after object removed), respond ONLY with:\n"
+                                "If it is NOT trash/recycling (e.g., a person, hand entering/leaving, significant lighting change, empty view after object removed), respond ONLY with:\n"
                                 "Classification: IGNORE\n"
                                 "Smelly: NO\n"
                                 "Smell Rating: 0\n"
@@ -104,7 +102,6 @@ def ask_chatgpt(image_path):
         )
 
         response_text = response.choices[0].message.content.strip()
-        # ... (Keep the response parsing logic as before) ...
         print("--- GPT-4V Raw Response ---")
         print(response_text)
         print("--------------------------")
@@ -119,25 +116,26 @@ def ask_chatgpt(image_path):
 
         # Robust parsing
         for line in lines:
-            if line.startswith("Classification:"):
+            line_lower = line.lower() # Case-insensitive matching
+            if line_lower.startswith("classification:"):
                 classification = line.split(":", 1)[1].strip().upper()
-            elif line.startswith("Smelly:"):
+            elif line_lower.startswith("smelly:"):
                 is_smelly = line.split(":", 1)[1].strip().upper()
-            elif line.startswith("Smell Rating:"):
+            elif line_lower.startswith("smell rating:"):
                 try:
                     smell_rating = int(line.split(":", 1)[1].strip())
                 except ValueError:
-                    smell_rating = -1
-            elif line.startswith("Volume Estimation:"):
+                    smell_rating = -1 # Handle parsing error
+            elif line_lower.startswith("volume estimation:"):
                  try:
                     # Extract number, handling potential units like 'cm^3'
                     volume_str = line.split(":", 1)[1].strip().split()[0]
-                    volume_guess = float(volume_str.replace(',', '')) # Handle potential commas
+                    # Handle potential commas in large numbers if GPT provides them
+                    volume_guess = float(volume_str.replace(',', ''))
                  except (ValueError, IndexError):
-                    volume_guess = -1.0
-            elif line.startswith("Item Name:"):
+                    volume_guess = -1.0 # Handle parsing error
+            elif line_lower.startswith("item name:"):
                 item_name = line.split(":", 1)[1].strip().upper()
-
 
         # --- Process the results ---
         if classification == "IGNORE":
@@ -150,118 +148,152 @@ def ask_chatgpt(image_path):
         print("→ Estimated volume (cm^3):", volume_guess)
         print("→ Item:", item_name)
 
-        # ... (Keep smell rating print logic as before) ...
+        # Add actions based on classification/smell if needed
         if smell_rating >= 7:
             print("Trash contains object that is very smelly")
         elif smell_rating >= 4:
             print("Trash contains object that is somewhat smelly")
-        elif smell_rating >= 0 and is_smelly == "NO": # Check NO specifically
+        elif smell_rating >= 0 and is_smelly == "NO": # Specifically check NO
              print("Trash is fine for now (object not smelly)")
         elif smell_rating >= 0:
             print("Trash is fine for now") # Low smell rating but YES
         else:
             print("Smell rating could not be determined")
 
-
         return classification, is_smelly, smell_rating, volume_guess, item_name
 
     except Exception as e:
         print(f"An error occurred during OpenAI request or processing: {e}")
+        # Optionally log the full error details: import traceback; traceback.print_exc()
         return None # Indicate error/ignore
 
+# Function to save the frame and trigger the OpenAI analysis
 def process_capture(frame_to_process, image_path="item_capture.jpg"):
     global is_processing, last_trigger_time
     print(f"Change detected for >{analysis_delay}s. Processing captured frame...")
     try:
         save_path = image_path
+        # Ensure the directory exists if image_path includes folders
+        # save_dir = os.path.dirname(save_path)
+        # if save_dir and not os.path.exists(save_dir):
+        #     os.makedirs(save_dir)
         cv2.imwrite(save_path, frame_to_process)
         print(f"Image captured and saved to {save_path}")
+
+        # Call the analysis function
         result = ask_chatgpt(save_path)
-        # ... (rest of function unchanged)
+
         if result:
+            # Optional: Do something specific with the successful result here
+            # classification, is_smelly, smell_rating, volume_guess, item_name = result
+            # e.g., send data to another service, control hardware
             pass
         else:
+            # Handle cases where GPT ignored the object or an error occurred
             print("Analysis resulted in IGNORE or an error.")
+
     except Exception as e:
         print(f"Error during frame processing or saving: {e}")
+        # Optionally log the full error details: import traceback; traceback.print_exc()
     finally:
+        # CRITICAL: Ensure flags are reset regardless of success/failure
         is_processing = False
-        last_trigger_time = time.time()
+        last_trigger_time = time.time() # Record when processing *ended* for cooldown
         print(f"Processing finished. Cooldown active for {cooldown_period}s.")
+        # change_first_seen_time is reset in the main loop logic
 
-# --- MODIFIED FUNCTION ---
+# --- Main Detection Loop Function ---
 def live_feed_and_detect(image_path="item_capture.jpg"):
     global current_frame, is_processing, last_trigger_time, change_first_seen_time
 
-    cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+    cap = cv2.VideoCapture(0, cv2.CAP_V4L2) # Use V4L2 backend explicitly if needed
     if not cap.isOpened():
         print("Cannot open camera")
         return
 
+    # Set resolution
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    (h, w) = (int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)), int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))) # Get actual dimensions
 
+    # Read dimensions AFTER setting them, and verify
+    time.sleep(0.5) # Give camera time to apply settings
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    if h == 0 or w == 0:
+        print(f"Error: Could not get valid frame dimensions ({w}x{h}) from camera.")
+        cap.release()
+        return
+    print(f"Camera resolution set to {w}x{h}")
 
     print("Camera opened. Allowing time for background learning...")
-    # Give the background subtractor some initial frames to learn
-    for _ in range(30):
+    # Give the background subtractor some initial frames to establish baseline
+    initial_bg_frames = 30
+    for i in range(initial_bg_frames):
         ret, frame = cap.read()
         if ret:
-            backSub.apply(frame)
-        time.sleep(0.05)
+            _ = backSub.apply(frame) # Apply frame to learn background
+        else:
+            print(f"Warning: Failed to grab frame {i+1}/{initial_bg_frames} during background learning.")
+        time.sleep(0.05) # Small delay
 
     print(f"Starting monitoring. Will analyze significant changes present for >{analysis_delay}s...")
 
     frame_counter = 0
     status_text = "Monitoring"
+    last_contour_boxes = [] # Store boxes from the last processed frame for display
 
     while True:
         ret, frame = cap.read()
         if not ret:
             print("Failed to grab frame")
-            time.sleep(0.1)
+            time.sleep(0.1) # Wait a bit before retrying
             continue
 
-        current_frame = frame.copy() # Keep clean copy
-        display_frame = frame # Frame to draw on
-        now = time.time()
+        current_frame = frame.copy() # Keep clean copy for analysis
+        display_frame = frame # Frame to draw visuals on
+        now = time.time() # Get current time for timing checks
 
         frame_counter += 1
 
-        # --- Process frame intermittently (BG Subtraction is faster, can use lower N) ---
+        # Initialize this flag at the start of each loop iteration
+        # It will be updated within the 'if' block when a frame is processed
+        is_valid_change_condition_met_in_last_processed_frame = False
+
+        # --- Process frame intermittently ---
         if frame_counter % process_every_n_frames == 0:
             # 1. Apply Background Subtraction
+            # Learning rate is managed internally by MOG2 based on history
             fgMask = backSub.apply(current_frame)
 
-            # Filter out shadows (value 127 in MOG2 default)
-            fgMask = cv2.threshold(fgMask, 200, 255, cv2.THRESH_BINARY)[1] # Keep only definite foreground
+            # Filter out shadows (value 127 in MOG2 default) and noise threshold
+            # Keep only definite foreground pixels
+            _, fgMask = cv2.threshold(fgMask, 200, 255, cv2.THRESH_BINARY)
 
             # 2. Clean up mask (Morphological Operations)
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)) # Kernel for morphology
-            # Remove small noise (erosion) then enlarge remaining areas (dilation)
+            # Adjust kernel size and iterations based on object size and noise level
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            # Erode noise -> Dilate object gaps -> Close internal holes
             fgMask_cleaned = cv2.morphologyEx(fgMask, cv2.MORPH_OPEN, kernel, iterations=2)
-            # Close gaps within objects
             fgMask_cleaned = cv2.morphologyEx(fgMask_cleaned, cv2.MORPH_CLOSE, kernel, iterations=3)
-
 
             # 3. Find Contours (Areas of Change)
             contours, _ = cv2.findContours(fgMask_cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             significant_change_detected = False
-            contour_boxes = [] # Store boxes of significant contours
+            current_contour_boxes = [] # Use a temporary list for this frame's boxes
             for cnt in contours:
                 area = cv2.contourArea(cnt)
-                if area > min_contour_area:
+                if area > min_contour_area: # Filter small changes
                     significant_change_detected = True
-                    # Get bounding box for visualization
                     x, y, cw, ch = cv2.boundingRect(cnt)
-                    contour_boxes.append((x, y, x+cw, y+ch))
-                    # No need to break, check all contours
+                    current_contour_boxes.append((x, y, x+cw, y+ch))
+                    # Typically don't break, process all significant contours if needed later
 
-            # --- Visualization (Optional: Show the mask) ---
+            last_contour_boxes = current_contour_boxes # Update the boxes to draw
+
+            # --- Visualization (Optional: Show the mask for debugging) ---
             # cv2.imshow("Foreground Mask", fgMask_cleaned)
-            # ------------------------------------------------
+            # -------------------------------------------------------------
 
             # 4. Check for Ignored Objects (using DNN) *only if* change was detected
             ignore_object_detected_in_frame = False
@@ -271,75 +303,85 @@ def live_feed_and_detect(image_path="item_capture.jpg"):
                 net.setInput(blob)
                 detections = net.forward()
 
+                # Check detections for ignored classes
                 for i in np.arange(0, detections.shape[2]):
                     confidence = detections[0, 0, i, 2]
                     if confidence > confidence_threshold:
                         idx = int(detections[0, 0, i, 1])
                         if idx < len(CLASSES) and CLASSES[idx] in IGNORE_CLASSES:
-                            print(f"Ignoring change due to detected: {CLASSES[idx]}")
+                            print(f"Ignoring change due to detected: {CLASSES[idx]} ({confidence:.2f})")
                             ignore_object_detected_in_frame = True
-                            # Optional: Draw red box around ignored DNN object
+                            # Draw ignore box immediately if found during processing
                             box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
                             (startX, startY, endX, endY) = box.astype("int")
-                            cv2.rectangle(display_frame, (startX, startY), (endX, endY), (0, 0, 255), 2)
+                            cv2.rectangle(display_frame, (startX, startY), (endX, endY), (0, 0, 255), 2) # Red box
                             cv2.putText(display_frame, f"Ignoring: {CLASSES[idx]}", (startX, startY - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                            break # If we see one ignored object, stop DNN check
+                            break # Stop DNN check if one ignore is found
 
+            # Determine the final condition for this processed frame
+            is_valid_change_condition_met_in_last_processed_frame = significant_change_detected and not ignore_object_detected_in_frame
 
-            # --- Trigger Logic based on Change Detection & Ignore Check ---
-            is_valid_change_condition_met = significant_change_detected and not ignore_object_detected_in_frame
-
-            if is_valid_change_condition_met:
+            # --- Trigger Logic (Based on this processed frame's result) ---
+            if is_valid_change_condition_met_in_last_processed_frame:
                 if change_first_seen_time == 0.0:
+                    # First time seeing valid change since last reset/trigger
                     print(f"Significant change detected. Starting {analysis_delay}s timer...")
                     change_first_seen_time = now
                     status_text = "Waiting (Change)..."
                 else:
+                    # Valid change still present, check timer
                     elapsed_time = now - change_first_seen_time
                     status_text = f"Waiting (Change) {elapsed_time:.1f}s / {analysis_delay}s"
                     if elapsed_time >= analysis_delay:
+                        # Delay met! Check if ready to process (not already processing & cooldown passed)
                         if not is_processing and (now - last_trigger_time > cooldown_period):
                             status_text = "Analyzing (Change)..."
                             print(f"--- Change detected for >{analysis_delay}s. Triggering Analysis ---")
-                            is_processing = True
-                            change_first_seen_time = 0.0 # Reset timer before thread
-                            frame_to_analyze = current_frame # Use the clean frame
-                            threading.Thread(target=process_capture, args=(frame_to_analyze, image_path)).start()
+                            is_processing = True # Mark as processing
+                            change_first_seen_time = 0.0 # Reset timer *before* starting thread
+                            frame_to_analyze = current_frame # Use the clean frame copy
+                            # Start analysis in a separate thread
+                            threading.Thread(target=process_capture, args=(frame_to_analyze, image_path), daemon=True).start() # Use daemon thread
                         elif is_processing:
                              status_text = "Waiting (Analysis in progress)"
                         elif (now - last_trigger_time <= cooldown_period):
-                             status_text = f"Waiting (Cooldown {cooldown_period - (now - last_trigger_time):.1f}s)"
+                             # Still in cooldown from previous analysis
+                             remaining_cooldown = cooldown_period - (now - last_trigger_time)
+                             status_text = f"Waiting (Cooldown {remaining_cooldown:.1f}s)"
 
             else:
-                # No valid change detected in this frame
+                # No valid change detected in *this processed frame*
                 if change_first_seen_time != 0.0:
+                    # If timer was running, reset it because change disappeared or ignore obj appeared
                     print("Change disappeared or ignored object detected before analysis delay.")
                     change_first_seen_time = 0.0 # Reset timer
-                # Update status based on processing/cooldown
+                # Update status text based on whether processing or cooldown is active
                 if is_processing:
                     status_text = "Waiting (Analysis in progress)"
                 elif (now - last_trigger_time <= cooldown_period) and last_trigger_time != 0:
-                     status_text = f"Waiting (Cooldown {cooldown_period - (now - last_trigger_time):.1f}s)"
+                     remaining_cooldown = cooldown_period - (now - last_trigger_time)
+                     status_text = f"Waiting (Cooldown {remaining_cooldown:.1f}s)"
                 else:
+                     # If not processing and not in cooldown, go back to monitoring
                      status_text = "Monitoring"
 
 
         # --- Drawing Bounding Boxes for Contours (on every frame) ---
-        # Only draw if valid change was detected in the *last processed frame*
-        # and the timer might be running or analysis starting
-        if is_valid_change_condition_met or status_text.startswith("Waiting (Change)") or status_text.startswith("Analyzing (Change)"):
-             for (x1, y1, x2, y2) in contour_boxes:
+        # Draw boxes from the 'last_contour_boxes' list which holds results
+        # from the most recent processed frame. Keep showing them during wait/analysis.
+        if status_text.startswith("Waiting (Change)") or status_text.startswith("Analyzing (Change)"):
+             for (x1, y1, x2, y2) in last_contour_boxes:
                  cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 255), 2) # Yellow box for change
 
-
-        # Display Status Text
-        cv2.putText(display_frame, f"Status: {status_text}", (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        # Display Status Text (ensure h is valid)
+        if h > 0:
+             cv2.putText(display_frame, f"Status: {status_text}", (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2) # Yellow text
 
         # --- Display the frame ---
         cv2.imshow("Live Feed - Change Detection", display_frame) # Renamed window
 
         # --- Handle Quit ---
-        key = cv2.waitKey(1) & 0xFF
+        key = cv2.waitKey(1) & 0xFF # Wait briefly for key press
         if key == ord('q'):
             print("Exiting live feed...")
             break
@@ -350,11 +392,12 @@ def live_feed_and_detect(image_path="item_capture.jpg"):
     print("Camera released and windows closed.")
 
 
-# --- Main Execution ---
+# --- Main Execution Block ---
 if __name__ == "__main__":
-    # Only check for DNN model files now, as BG subtractor is built-in
+    # Check if required DNN model files exist (for ignore check)
     if not os.path.exists(model_proto) or not os.path.exists(model_weights):
         print(f"Error: DNN Model files for ignore check not found.")
         print(f"Please ensure '{model_proto}' and '{model_weights}' are in the script's directory.")
     else:
-        live_feed_and_detect("item_capture.jpg")
+        # Start the main detection loop
+        live_feed_and_detect("item_capture.jpg") # Specify filename for saved captures
