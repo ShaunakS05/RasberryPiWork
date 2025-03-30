@@ -233,26 +233,24 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
     global is_processing, last_trigger_time, ser
     print(f"Change detected for >{analysis_delay}s. Processing captured frame...")
 
-    # Initialize variables that might be used in 'finally'
-    classification_result = None
-    item_name_result = "UNKNOWN ITEM" # Default name used for GUI and logic check
-    item_name_from_openai = "UNKNOWN" # Store the raw name from OpenAI
+    # Initialize variables
+    classification_result = None # Will store the final decision (TRASH, RECYCLING, IGNORE, ERROR)
+    item_name_result = "UNKNOWN ITEM" # Default name
+    is_cardboard_box = False # Flag specifically for cardboard
 
     try:
         save_path = image_path
-        # Ensure directory exists (if image_path includes a path)
         save_dir = os.path.dirname(save_path)
         if save_dir and not os.path.exists(save_dir):
             os.makedirs(save_dir)
             print(f"Created directory: {save_dir}")
 
-        # Save the image
         save_success = cv2.imwrite(save_path, frame_to_process)
         if not save_success:
             print(f"Error: Failed to save image to {save_path}")
-            is_processing = False
-            last_trigger_time = time.time()
-            return # Exit processing
+            classification_result = "ERROR" # Mark as error before finally block
+            # Need to set is_processing=False and update time in finally
+            return # Exit processing early, finally will still run if placed correctly (but let's handle it explicitly below)
 
         print(f"Image captured and saved to {save_path}")
 
@@ -262,30 +260,34 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
         if result:
             # Unpack the full result tuple
             classification, is_smelly, smell_rating, volume_guess, item_name_from_openai = result
-            classification_result = classification # Store the primary classification
 
-            # Determine the name to use (primarily for GUI, but keep raw name too)
-            item_name_result = item_name_from_openai if item_name_from_openai not in ["UNKNOWN", "IGNORE"] else "DETECTED ITEM"
+            # --- <<< START CARDBOARD BOX CHECK >>> ---
+            if item_name_from_openai.upper() == "CARDBOARD BOX":
+                print("→ Detected 'CARDBOARD BOX'. Ignoring this detection completely.")
+                is_cardboard_box = True
+                classification_result = "IGNORE" # Treat as ignore for downstream logic simplification
+                item_name_result = "CARDBOARD BOX" # Keep the name for clarity if needed later
+            # --- <<< END CARDBOARD BOX CHECK >>> ---
+            else:
+                # It's not cardboard, proceed with normal classification
+                classification_result = classification # Store the primary classification
+                item_name_result = item_name_from_openai if item_name_from_openai not in ["UNKNOWN", "IGNORE"] else "DETECTED ITEM"
+                print(f"Debug: OpenAI Classification: '{classification_result}', Raw Item Name: '{item_name_from_openai}', Result Name Used: '{item_name_result}'")
 
-            print(f"Debug: OpenAI Classification: '{classification_result}', Raw Item Name: '{item_name_from_openai}', Result Name Used: '{item_name_result}'")
-
-            # --- Send result to GUI ---
-            # GUI still gets sent only for TRASH/RECYCLING classifications
-            if classification_result in ["TRASH", "RECYCLING"]:
-                detection_data = {
-                    "type": classification_result,
-                    "name": item_name_result
-                }
-                send_to_gui(detection_data)
-            # --------------------------
+                # --- Send result to GUI (only for non-cardboard TRASH/RECYCLING) ---
+                if classification_result in ["TRASH", "RECYCLING"]:
+                    detection_data = {
+                        "type": classification_result,
+                        "name": item_name_result
+                    }
+                    send_to_gui(detection_data)
+                # ---------------------------------------------------------------
 
         else:
-            print("Analysis resulted in IGNORE or an error. Applying IGNORE logic for Arduino.")
-            # Set classification specifically to IGNORE if analysis failed or returned None explicitly
-            # This ensures the 'finally' block handles it correctly according to the new rule.
-            classification_result = "IGNORE"
-            item_name_result = "IGNORE" # Keep consistent
-
+            # Analysis resulted in IGNORE (from GPT) or an error during analysis
+            print("Analysis resulted in IGNORE or an error. Applying IGNORE logic.")
+            classification_result = "IGNORE" # Explicitly set for finally block
+            item_name_result = "IGNORE"
 
     except Exception as e:
         print(f"Error during frame processing or OpenAI analysis step: {e}")
@@ -294,90 +296,94 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
         classification_result = "ERROR" # Mark as error state
         item_name_result = "ERROR"
 
-    finally:
-        # --- Determine Arduino Command based on new rules ---
+    # --- Finally block ensures resetting happens ---
+    # This block executes even if there was an error *before* it,
+    # but not if return was called early (like after failed save).
+    # It's generally better practice to put the final reset logic *outside*
+    # the try/except/finally related to the core processing steps, but for
+    # this structure, we'll manage it carefully within.
 
-        send_command_to_arduino = False
-        command_to_send = None
+    # --- Determine Arduino Command ---
+    # This logic now only runs if it wasn't identified as a cardboard box
+    # and classification_result is valid for an action.
 
-        # Rule 1: Handle TRASH classification
+    send_command_to_arduino = False
+    command_to_send = None
+
+    if not is_cardboard_box: # <<< Check if we should act at all
         if classification_result == "TRASH":
-             # Optional: Keep cardboard check even for trash? Unlikely to be needed.
-             # if item_name_result.upper() != "CARDBOARD BOX":
              send_command_to_arduino = True
              command_to_send = 'T\n'
-             # else:
-             #     print(f"Item classified as TRASH but name is '{item_name_result}'. Skipping Arduino command.")
-
-        # Rule 2: Handle RECYCLING classification (with cardboard exception)
         elif classification_result == "RECYCLING":
-            if item_name_result.upper() != "CARDBOARD BOX":
-                send_command_to_arduino = True
-                command_to_send = 'R\n'
-            else:
-                # This is the specific CARDBOARD BOX exception for RECYCLING
-                print(f"Item identified as '{item_name_result}' (Recycling). Skipping Arduino command.")
-                # command remains None, send_command flag remains False
-
-        # Rule 3: Handle IGNORE classification -> Treat as TRASH for Arduino
+             # No need for cardboard check here anymore, it's handled above
+             send_command_to_arduino = True
+             command_to_send = 'R\n'
+        # Implicitly, if IGNORE or ERROR, flags remain False
         elif classification_result == "IGNORE":
-            print(f"Classification is 'IGNORE'. Treating as TRASH for Arduino command.")
-            send_command_to_arduino = True
-            command_to_send = 'T\n'
-
-        # Rule 4: Handle ERROR or other unexpected states
-        else: # Covers ERROR, None (if somehow it gets here), or UNKNOWN
+             print(f"Classification is 'IGNORE'. No command sent to Arduino.")
+        else: # ERROR or UNKNOWN
              print(f"Classification is '{classification_result}'. No command sent to Arduino.")
+    else:
+        # Explicitly state why no command for cardboard
+        print("Skipping Arduino command because 'CARDBOARD BOX' was detected.")
 
 
-        # --- Execute Sending Logic ---
-        if send_command_to_arduino and command_to_send:
-            if ser and ser.is_open:
-                try:
-                    print(f"Sending command '{command_to_send.strip()}' to Arduino...")
-                    ser.write(command_to_send.encode('utf-8'))
-                    print("Command sent.")
-                except serial.SerialException as e:
-                    print(f"Error writing to Arduino: {e}")
-                except Exception as e:
-                    print(f"Unexpected error during serial write: {e}")
-            else:
-                # Conditions met, but serial port isn't ready
-                print(f"Cannot send command '{command_to_send.strip()}': Arduino serial port not available.")
-        elif command_to_send is None and classification_result == "RECYCLING" and item_name_result.upper() == "CARDBOARD BOX":
-            # This case was handled above by printing the skip message, do nothing here.
-            pass
+    # --- Execute Arduino Sending Logic ---
+    if send_command_to_arduino and command_to_send:
+        if ser and ser.is_open:
+            try:
+                print(f"Sending command '{command_to_send.strip()}' to Arduino...")
+                ser.write(command_to_send.encode('utf-8'))
+                print("Command sent.")
+            except serial.SerialException as e:
+                print(f"Error writing to Arduino: {e}")
+            except Exception as e:
+                print(f"Unexpected error during serial write: {e}")
         else:
-            # Covers cases where send_command_to_arduino is False for other reasons (ERROR, etc.)
-            # The message for these cases was printed in the rule checks above.
-            pass
-        # -----------------------------
+            print(f"Cannot send command '{command_to_send.strip()}': Arduino serial port not available.")
+    # ------------------------------------
 
 
-        # Generate a unique ID for the new item
-        new_item_id = f"item-{uuid.uuid4().hex[:8]}"
+    # --- Database Update (Skip if Cardboard, IGNORE, or ERROR) ---
+    if not is_cardboard_box and classification_result not in ["IGNORE", "ERROR", None]:
+        try:
+            # Generate a unique ID for the new item
+            new_item_id = f"item-{uuid.uuid4().hex[:8]}"
 
-        # Create the new item
-        new_item = {
-            "id": new_item_id,
-            "type": classification_result,  # or "recycle", "compost", etc.
-            "name": item_name_result,  # name of the trash item
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        # Add the item to the array using the $push operator
-        trash_can_id = "67e90d1dc1ede39d902e351a"  # The ObjectId from your example
-        result = collection.update_one(
-            {"_id": ObjectId(trash_can_id)},  # Convert string to ObjectId
-            {"$push": {"items": new_item}}
-        )
+            # Create the new item
+            new_item = {
+                "id": new_item_id,
+                "type": classification_result, # Use the final classification
+                "name": item_name_result,     # Use the determined item name
+                "timestamp": datetime.now().isoformat()
+            }
 
-        # Reset processing flag and update trigger time regardless of command sending
-        is_processing = False
-        last_trigger_time = time.time()
-        print(f"Processing finished. Cooldown active for {cooldown_period}s.")
-        print("-" * 30) # Add a separator line for log readability
+            # Add the item to the array using the $push operator
+            trash_can_id = "67e90d1dc1ede39d902e351a" # Ensure this ID is correct!
+            result = collection.update_one(
+                {"_id": ObjectId(trash_can_id)},
+                {"$push": {"items": new_item}}
+            )
+            if result.modified_count > 0:
+                 print(f"Logged item '{item_name_result}' ({classification_result}) to database.")
+            else:
+                 print(f"Warning: Failed to log item to database (Trash can ID '{trash_can_id}' not found or no change made).")
 
+        except NameError:
+             print("Warning: MongoDB 'collection' or 'ObjectId' not defined. Skipping database log.")
+        except Exception as db_err:
+            print(f"Error logging item to MongoDB: {db_err}")
+    else:
+        print(f"Skipping database log for classification: {classification_result} (Cardboard: {is_cardboard_box})")
+    # -----------------------------------------------------------
+
+
+    # --- Reset processing flag and update trigger time ---
+    # This should always happen at the very end of processing attempt
+    is_processing = False
+    last_trigger_time = time.time()
+    print(f"Processing finished. Cooldown active for {cooldown_period}s.")
+    print("-" * 30) # Add a separator line for log readability
 
 def live_feed_and_detect(image_path="item_capture.jpg"):
     """Main camera loop: captures, detects change, triggers processing."""
