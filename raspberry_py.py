@@ -274,14 +274,15 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
                 item_name_result = item_name_from_openai if item_name_from_openai not in ["UNKNOWN", "IGNORE"] else "DETECTED ITEM"
                 print(f"Debug: OpenAI Classification: '{classification_result}', Raw Item Name: '{item_name_from_openai}', Result Name Used: '{item_name_result}'")
 
-                # --- Send result to GUI (only for non-cardboard TRASH/RECYCLING) ---
-                if classification_result in ["TRASH", "RECYCLING"]:
-                    detection_data = {
-                        "type": classification_result,
-                        "name": item_name_result
-                    }
-                    send_to_gui(detection_data)
-                # ---------------------------------------------------------------
+            # --- Send result to GUI ---
+            # GUI still gets sent only for TRASH/RECYCLING classifications
+            if classification_result in ["TRASH", "RECYCLING"] and item_name_result != "CARDBOARD BOX" and item_name_result != "CARDBOARD":
+                detection_data = {
+                    "type": classification_result,
+                    "name": item_name_result
+                }
+                send_to_gui(detection_data)
+            # --------------------------
 
         else:
             # Analysis resulted in IGNORE (from GPT) or an error during analysis
