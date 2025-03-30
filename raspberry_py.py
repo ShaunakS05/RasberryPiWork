@@ -21,7 +21,7 @@ except Exception as e:
     print("Proceeding without OpenAI analysis capability.")
     client = None # Ensure client is None if init fails
 
-analysis_delay = 1  # Seconds the change must persist
+analysis_delay = 0.5  # Seconds the change must persist
 process_every_n_frames = 3 # How often to check for change
 cooldown_period = 5 # Seconds after analysis before next trigger possible
 min_contour_area = 500 # <<< ADJUST: Minimum pixel area for change detection
@@ -499,7 +499,15 @@ def live_feed_and_detect(image_path="item_capture.jpg"):
             # Display status text
             cv2.putText(display_frame, f"Status: {status_text}", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-         
+            # # Show the frame (optional, can be disabled for headless operation)
+            # try:
+            #   #  cv2.imshow(display_window_name, display_frame)
+            # except cv2.error as e:
+            #      # Handle cases where display might fail (e.g., no graphical environment)
+            #      print(f"Warning: Could not display window ({display_window_name}): {e}. Check if GUI environment is available.")
+            #      # You might want to break or add a flag to stop trying to show the window after the first failure.
+            #      pass
+
 
             # --- Handle Quit ---
             key = cv2.waitKey(1) & 0xFF # waitKey is crucial for imshow to work
