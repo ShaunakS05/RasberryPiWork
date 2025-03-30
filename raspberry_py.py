@@ -218,12 +218,13 @@ def initialize_serial():
         return False
 
 def process_capture(frame_to_process, image_path="item_capture.jpg"):
-    """Saves frame, calls analysis, sends command to Arduino, and sends result to GUI."""
+    """Saves frame, calls analysis, sends command to Arduino (conditionally), and sends result to GUI."""
     global is_processing, last_trigger_time, ser
     print(f"Change detected for >{analysis_delay}s. Processing captured frame...")
 
+    # Initialize variables that might be used in 'finally'
     classification_result = None
-    item_name_result = "UNKNOWN ITEM" # Default name
+    item_name_result = "UNKNOWN ITEM" # Default name used for GUI and logic check
 
     try:
         save_path = image_path
@@ -237,7 +238,10 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
         save_success = cv2.imwrite(save_path, frame_to_process)
         if not save_success:
             print(f"Error: Failed to save image to {save_path}")
-            return # Exit processing if save fails
+            # Reset processing flag early if save fails
+            is_processing = False
+            last_trigger_time = time.time() # Still update time to start cooldown
+            return # Exit processing
 
         print(f"Image captured and saved to {save_path}")
 
@@ -246,44 +250,86 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
 
         if result:
             # Unpack the full result tuple
-            classification, _, _, _, item_name = result
+            # We need the original item_name for the Arduino check
+            classification, is_smelly, smell_rating, volume_guess, item_name_from_openai = result
             classification_result = classification
-            item_name_result = item_name if item_name != "UNKNOWN" else "DETECTED ITEM"
+
+            # Use the specific name from OpenAI for the Arduino check,
+            # but potentially use a more generic name for the GUI if needed.
+            item_name_result = item_name_from_openai if item_name_from_openai not in ["UNKNOWN", "IGNORE"] else "DETECTED ITEM"
+
+            print(f"Debug: OpenAI Raw Item Name: '{item_name_from_openai}', Result Name Used: '{item_name_result}'") # Debug print
 
             # --- Send result to GUI ---
+            # GUI gets sent regardless of the item name, as long as it's T/R
             if classification_result in ["TRASH", "RECYCLING"]:
                 detection_data = {
                     "type": classification_result,
-                    "name": item_name_result
+                    "name": item_name_result # Send the potentially modified name
                 }
+                # Consider running send_to_gui in a thread if it blocks
                 send_to_gui(detection_data)
             # --------------------------
 
         else:
             print("Analysis resulted in IGNORE or an error. No command sent to Arduino or GUI.")
+            # Ensure classification_result is None or "IGNORE" if analysis fails/ignored
+            classification_result = "IGNORE" # Explicitly set state
+            item_name_result = "IGNORE"      # Explicitly set state
+
 
     except Exception as e:
         print(f"Error during frame processing or OpenAI analysis step: {e}")
+        import traceback
+        traceback.print_exc() # Print full error details
+        classification_result = "ERROR" # Mark as error state
+        item_name_result = "ERROR"
 
     finally:
-        # --- Send command to Arduino ---
+        # --- Send command to Arduino (with CARDBOARD BOX exception) ---
+
+        # Conditions to send command:
+        # 1. Classification must be TRASH or RECYCLING
+        # 2. Item name result must NOT be 'CARDBOARD BOX' (case-insensitive check recommended)
+        # 3. Arduino serial must be available and open
+
+        send_command_to_arduino = False # Flag to decide if we should send
+        command_to_send = None
+
         if classification_result in ["TRASH", "RECYCLING"]:
-            command = 'T\n' if classification_result == "TRASH" else 'R\n'
+            # Check item name against "CARDBOARD BOX" (case-insensitive)
+            if item_name_result.upper() != "CARDBOARD BOX":
+                send_command_to_arduino = True
+                command_to_send = 'T\n' if classification_result == "TRASH" else 'R\n'
+            else:
+                # Item IS a cardboard box, explicitly state we are skipping Arduino
+                print(f"Item identified as '{item_name_result}'. Skipping Arduino command.")
+        else:
+             # Classification was IGNORE, ERROR, or None
+             print(f"Classification is '{classification_result}'. No command sent to Arduino.")
+
+
+        # Proceed only if all conditions met
+        if send_command_to_arduino and command_to_send:
             if ser and ser.is_open:
                 try:
-                    print(f"Sending command '{command.strip()}' to Arduino...")
-                    ser.write(command.encode('utf-8'))
+                    print(f"Sending command '{command_to_send.strip()}' to Arduino...")
+                    ser.write(command_to_send.encode('utf-8'))
                     print("Command sent.")
-                except serial.SerialException as e: print(f"Error writing to Arduino: {e}")
-                except Exception as e: print(f"Unexpected error during serial write: {e}")
+                except serial.SerialException as e:
+                    print(f"Error writing to Arduino: {e}")
+                except Exception as e:
+                    print(f"Unexpected error during serial write: {e}")
             else:
-                print("Cannot send command: Arduino serial port not available.")
+                # Conditions met, but serial port isn't ready
+                print(f"Cannot send command '{command_to_send.strip()}': Arduino serial port not available.")
         # -----------------------------
 
-        # Reset processing flag and update trigger time
+        # Reset processing flag and update trigger time regardless of command sending
         is_processing = False
         last_trigger_time = time.time()
         print(f"Processing finished. Cooldown active for {cooldown_period}s.")
+        print("-" * 30) # Add a separator line for log readability
 
 
 def live_feed_and_detect(image_path="item_capture.jpg"):
