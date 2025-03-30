@@ -46,26 +46,26 @@ WOOD_BROWN = (160, 120, 85); TEXT_BROWN = (90, 65, 40)
 
 # --- Fonts ---
 try:
-    font_title = pygame.font.SysFont("DejaVu Sans", 45, bold=True)
-    font_large = pygame.font.SysFont("DejaVu Sans", 30, bold=True)
-    font_medium = pygame.font.SysFont("DejaVu Sans", 22)
-    font_small = pygame.font.SysFont("DejaVu Sans", 18)
-    font_tiny = pygame.font.SysFont("DejaVu Sans", 16)
+    font_title = pygame.font.SysFont("DejaVu Sans", 100, bold=True)
+    font_large = pygame.font.SysFont("DejaVu Sans", 90, bold=True)
+    font_medium = pygame.font.SysFont("DejaVu Sans", 70)
+    font_small = pygame.font.SysFont("DejaVu Sans", 45)
+    font_tiny = pygame.font.SysFont("DejaVu Sans", 36)
     print("Loaded DejaVu Sans system font.")
 except Exception as e1:
     print(f"Warning: Could not load system font 'DejaVu Sans'. Trying Arial. Error: {e1}")
     try:
-        font_title = pygame.font.SysFont("Arial", 36, bold=True)
-        font_large = pygame.font.SysFont("Arial", 30, bold=True)
-        font_medium = pygame.font.SysFont("Arial", 22)
-        font_small = pygame.font.SysFont("Arial", 18)
-        font_tiny = pygame.font.SysFont("Arial", 16)
+        font_title = pygame.font.SysFont("Arial", 45, bold=True)
+        font_large = pygame.font.SysFont("Arial", 40, bold=True)
+        font_medium = pygame.font.SysFont("Arial", 30)
+        font_small = pygame.font.SysFont("Arial", 28)
+        font_tiny = pygame.font.SysFont("Arial", 22)
         print("Loaded Arial system font.")
     except Exception as e2:
         print(f"Warning: Could not load system font 'Arial'. Using default font. Error: {e2}")
-        font_title = pygame.font.Font(None, 40); font_large = pygame.font.Font(None, 34)
-        font_medium = pygame.font.Font(None, 26); font_small = pygame.font.Font(None, 22)
-        font_tiny = pygame.font.Font(None, 18)
+        font_title = pygame.font.Font(None, 60); font_large = pygame.font.Font(None, 50)
+        font_medium = pygame.font.Font(None, 45); font_small = pygame.font.Font(None, 36)
+        font_tiny = pygame.font.Font(None, 25)
 
 # --- Communication Setup ---
 detection_queue = queue.Queue()
@@ -221,7 +221,7 @@ class NaturalProgressBar:
                 self.draw_water_progress(surface, progress_ratio)
             text_color = TEXT_BROWN
             text = font_medium.render(f"{int(self.current_value)}%", True, text_color)
-            text_rect = text.get_rect(center=(self.x + self.width/2, self.y + 25))
+            text_rect = text.get_rect(center=(self.x + self.width/2, self.y + 55))
             surface.blit(text, text_rect)
         except (pygame.error, ValueError, ZeroDivisionError, IndexError) as e:
             print(f"Warning: Error drawing progress bar: {e}")
@@ -425,12 +425,14 @@ class DetectionAnimation:
                 # (you may still want to update your BinStats)
                 # self.stats.update_stats(self.item_type)  # Uncomment if needed
                 if self.item_type.upper() == "RECYCLING":
-                     new_value = min(smart_bin_interface.recycling_progress.current_value + 10, 100)
+                     new_value = min(smart_bin_interface.recycling_progress.current_value + 25, 100)
                      smart_bin_interface.recycling_progress.set_value(new_value)
+                     smart_bin_interface.stats.recycled_items += 1
                      print(f"GUI: Recycling progress updated to {new_value}%")
                 elif self.item_type.upper() == "TRASH":
-                     new_value = min(smart_bin_interface.landfill_progress.current_value + 10, 100)
+                     new_value = min(smart_bin_interface.landfill_progress.current_value + 25, 100)
                      smart_bin_interface.landfill_progress.set_value(new_value)
+                     smart_bin_interface.stats.landfill_items += 1
                      print(f"GUI: Landfill progress updated to {new_value}%")
             if self.phase == "dropping" and self.y_pos >= self.target_y:
                 self.y_pos = self.target_y
@@ -533,23 +535,23 @@ class DetectionAnimation:
             rotated_rect = rotated_image.get_rect(center=(SCREEN_WIDTH // 2, int(self.y_pos)))
             surface.blit(rotated_image, rotated_rect)
             if self.phase == "scanning":
-                loading_bg_rect = pygame.Rect(self.loading_x, self.loading_y, self.loading_width, self.loading_height)
+                loading_bg_rect = pygame.Rect(self.loading_x, self.loading_y+25, self.loading_width, self.loading_height)
                 pygame.draw.rect(surface, LIGHT_BROWN, loading_bg_rect)
                 fill_color = LEAF_GREEN if self.item_type == "RECYCLING" else SOFT_BROWN
                 fill_width = int(self.loading_width * (self.scan_progress / 100))
                 if fill_width > 0:
-                     fill_rect = pygame.Rect(self.loading_x, self.loading_y, fill_width, self.loading_height)
+                     fill_rect = pygame.Rect(self.loading_x, self.loading_y+25, fill_width, self.loading_height)
                      pygame.draw.rect(surface, fill_color, fill_rect)
                 pygame.draw.rect(surface, WOOD_BROWN, loading_bg_rect, 2)
                 text = font_medium.render("Analyzing...", True, TEXT_BROWN)
-                text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, self.loading_y - 25))
+                text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, self.loading_y - 20))
                 surface.blit(text, text_rect)
             elif self.phase in ["revealing", "feedback"]:
                 text_center_x = SCREEN_WIDTH // 2
                 text_base_y = self.y_pos + rotated_rect.height // 2 + 20
                 name_surf = font_large.render(self.item_name, True, TEXT_BROWN)
                 name_surf.set_alpha(self.reveal_alpha)
-                name_rect = name_surf.get_rect(center=(text_center_x, text_base_y + 20))
+                name_rect = name_surf.get_rect(center=(text_center_x, text_base_y + 40))
                 name_bg_rect = name_rect.inflate(20, 10)
                 name_bg_surf = pygame.Surface(name_bg_rect.size, pygame.SRCALPHA)
                 name_bg_surf.fill((*CREAM[:3], int(180 * (self.reveal_alpha / 255))))
@@ -560,7 +562,7 @@ class DetectionAnimation:
                 type_text = "Recyclable" if self.item_type == "RECYCLING" else "Landfill"
                 type_surf = font_medium.render(type_text, True, type_color)
                 type_surf.set_alpha(self.reveal_alpha)
-                type_rect = type_surf.get_rect(center=(text_center_x, text_base_y + 60))
+                type_rect = type_surf.get_rect(center=(text_center_x, text_base_y + 150))
                 type_bg_rect = type_rect.inflate(15, 8)
                 type_bg_surf = pygame.Surface(type_bg_rect.size, pygame.SRCALPHA)
                 type_bg_surf.fill((*CREAM[:3], int(160 * (self.reveal_alpha / 255))))
@@ -718,6 +720,7 @@ class SmartBinInterface:
                 self.hint_state = "fading_in"
                 self.last_hint_time = current_time
         self.hint_alpha = max(0, min(255, self.hint_alpha))
+        '''
     def draw_hint(self, surface):
         if self.hint_alpha <= 0: return
         try:
@@ -733,7 +736,8 @@ class SmartBinInterface:
             hint_surf.set_alpha(self.hint_alpha)
             surface.blit(hint_surf, hint_rect)
         except pygame.error as e:
-            print(f"Warning: Error drawing hint: {e}")
+            print(f"Warning: Error drawing hint: {e}")'
+            '''
     def process_camera_detection(self, detection_data):
         if self.state == "idle" and isinstance(detection_data, dict):
             item_name = detection_data.get("name", "Unknown Item")
@@ -990,8 +994,7 @@ def main():
                     smart_bin_interface.draw_progress_bars(screen)
                     correct_animating = hasattr(smart_bin_interface.correct_button, 'animation') and smart_bin_interface.correct_button.animation > 0
                     incorrect_animating = hasattr(smart_bin_interface.incorrect_button, 'animation') and smart_bin_interface.incorrect_button.animation > 0
-                    if not (correct_animating or incorrect_animating):
-                         smart_bin_interface.draw_hint(screen)
+
                 else:
                     smart_bin_interface.draw_detection(screen)
             except Exception as draw_err:
