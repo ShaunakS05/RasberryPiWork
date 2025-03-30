@@ -499,30 +499,96 @@ def simulate_detection(queue): # (Unchanged)
 
 # --- Server Thread Function --- (Unchanged)
 def gui_server_thread(host, port, data_queue, running_flag_func):
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM); server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    """Listens for connections and puts received data into the queue."""
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        server_socket.bind((host, port)); server_socket.listen(1); print(f"[Server Thread] Listening on {host}:{port}"); server_socket.settimeout(1.0)
+        server_socket.bind((host, port))
+        server_socket.listen(1)
+        print(f"[Server Thread] Listening on {host}:{port}")
+        server_socket.settimeout(1.0) # Check running flag periodically
+
         while running_flag_func():
+            conn = None # Ensure conn is defined for finally block
             try:
                 conn, addr = server_socket.accept()
-                with conn:
-                    print(f"[Server Thread] Accepted connection from {addr}"); data = b""
-                    while True: chunk = conn.recv(1024)
-                    if not chunk: break; data += chunk
-                    if data.strip().endswith(b'}'): break
-                    if data:
-                        try: message_str = data.decode('utf-8'); print(f"[Server Thread] Received raw data: {message_str}"); detection_data = json.loads(message_str); print(f"[Server Thread] Parsed data: {detection_data}")
-                        if isinstance(detection_data, dict) and "type" in detection_data and "name" in detection_data: data_queue.put(detection_data); print("[Server Thread] Data added to queue.")
-                        else: print("[Server Thread] Warning: Received data is not in expected format.")
-                        except json.JSONDecodeError as e: print(f"[Server Thread] Error decoding JSON: {e} - Data: {data.decode('utf-8', errors='ignore')}")
-                        except UnicodeDecodeError as e: print(f"[Server Thread] Error decoding UTF-8: {e} - Raw data: {data}")
-                        except Exception as e: print(f"[Server Thread] Error processing received data: {e}")
-                    else: print("[Server Thread] Received empty data or connection closed early.")
-            except socket.timeout: continue
-            except Exception as e: print(f"[Server Thread] Error accepting connection: {e}"); time.sleep(1)
-    except Exception as e: print(f"[Server Thread] Error binding or listening: {e}")
-    finally: print("[Server Thread] Shutting down..."); server_socket.close()
+                print(f"[Server Thread] Accepted connection from {addr}")
+                data = b""
+                parsed_data = None # Initialize parsed_data for this connection
 
+                # Set a timeout for receiving data on the connection
+                conn.settimeout(5.0) # e.g., 5 seconds timeout for receiving
+
+                while True: # Loop to receive potentially chunked data
+                    try:
+                        chunk = conn.recv(1024)
+                        if not chunk:
+                            print("[Server Thread] Connection closed by client.")
+                            break # Connection closed
+                        data += chunk
+                        # Try decoding incrementally IF you expect large JSONs, otherwise wait
+                        # For simple dicts, waiting for end is often fine
+                        if data.strip().endswith(b'}'): # Basic check for likely end
+                           print("[Server Thread] Potential end of data detected.")
+                           break
+                    except socket.timeout:
+                        print("[Server Thread] Timeout waiting for more data from client.")
+                        break # Stop waiting if client sends nothing for a while
+                    except socket.error as sock_err:
+                        print(f"[Server Thread] Socket error during recv: {sock_err}")
+                        break # Stop receiving on error
+
+
+                if data:
+                    try:
+                        message_str = data.decode('utf-8')
+                        print(f"[Server Thread] Received raw data: {message_str}")
+                        parsed_data = json.loads(message_str) # Parse here
+                        print(f"[Server Thread] Parsed data: {parsed_data}")
+
+                    except json.JSONDecodeError as e:
+                        print(f"[Server Thread] Error decoding JSON: {e} - Data: {data.decode('utf-8', errors='ignore')}")
+                        parsed_data = None # Ensure it's None if parsing fails
+                    except UnicodeDecodeError as e:
+                        print(f"[Server Thread] Error decoding UTF-8: {e} - Raw data: {data}")
+                        parsed_data = None
+                    except Exception as e:
+                        print(f"[Server Thread] Error processing received data: {e}")
+                        parsed_data = None
+                else:
+                     print("[Server Thread] Received no data or connection closed early.")
+
+                # --- Validate and Queue Parsed Data ---
+                if parsed_data is not None: # Check if parsing was successful
+                    if isinstance(parsed_data, dict) and "type" in parsed_data and "name" in parsed_data:
+                        # Check if type is valid before queueing
+                        if parsed_data.get("type") in ["RECYCLING", "TRASH"]:
+                             data_queue.put(parsed_data)
+                             print("[Server Thread] Valid data added to queue.")
+                        else:
+                             print(f"[Server Thread] Warning: Received invalid 'type': {parsed_data.get('type')}")
+                    else:
+                        print("[Server Thread] Warning: Parsed data is not a valid dictionary or lacks required keys.")
+                # ---------------------------------------
+
+            except socket.timeout:
+                # This timeout is for server_socket.accept(), means no incoming connection
+                continue # Normal, check running_flag again
+            except Exception as e:
+                print(f"[Server Thread] Error handling connection: {e}")
+                import traceback
+                traceback.print_exc() # Print full traceback for connection errors
+                time.sleep(0.5) # Short pause after connection error
+            finally:
+                 if conn:
+                     print(f"[Server Thread] Closing connection from {addr}")
+                     conn.close() # Ensure connection is closed
+
+    except Exception as e:
+        print(f"[Server Thread] Error binding or listening: {e}")
+    finally:
+        print("[Server Thread] Shutting down...")
+        server_socket.close()
 # --- Main Function --- (Unchanged)
 def main():
     global server_running; server_thread = None
