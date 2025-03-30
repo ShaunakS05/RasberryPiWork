@@ -356,7 +356,7 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
 
 
         # Generate a unique ID for the new item
-new_item_id = f"item-{uuid.uuid4().hex[:8]}"
+        new_item_id = f"item-{uuid.uuid4().hex[:8]}"
 
         # Create the new item
         new_item = {
