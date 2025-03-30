@@ -9,14 +9,6 @@ import socket # For sending data to GUI
 import json   # For formatting data to send
 from openai import OpenAI
 from dotenv import load_dotenv
-import uuid
-from pymongo import MongoClient
-from datetime import datetime
-from bson.objectid import ObjectId
-
-client = MongoClient('mongodb+srv://nyanprak:Samprakash3!@trash.utmo5ml.mongodb.net/?retryWrites=true&w=majority&appName=trash')
-db = client['trash_management_db']
-collection = db['trash_cans']
 
 # --- Configuration ---
 load_dotenv()
@@ -331,21 +323,6 @@ def process_capture(frame_to_process, image_path="item_capture.jpg"):
         if send_command_to_arduino and command_to_send:
             if ser and ser.is_open:
                 try:
-                    new_item_id = f"item-(uuid.uuid4().hex[:8])"
-
-                    new_item = {
-                        "id": new_item_id,
-                        "type": classification_result,
-                        "name": item_name_result,
-                        "timestamp": datetime.now().isoformat()
-                    }
-
-                    our_trash_id = ObjectId("67e90d1dc1ede39d902e351f")
-                    result = collection.update_one(
-                        {"_id": our_trash_id},
-                        {"$push": {"items": new_item}}
-                    )
-
                     print(f"Sending command '{command_to_send.strip()}' to Arduino...")
                     ser.write(command_to_send.encode('utf-8'))
                     print("Command sent.")
