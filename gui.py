@@ -38,10 +38,6 @@ GUI_SERVER_PORT = 9999      # Port for the detector to connect to (must match ra
 server_running = True       # Flag to control the server thread
 
 # --- Pygame GUI Classes ---
-# (BinStats, NatureElement, NaturalProgressBar, EcoButton, DetectionAnimation, SmartBinInterface classes remain exactly the same as the previous working version)
-# ... PASTE ALL THE CLASSES HERE from the previous correct version ...
-# Make sure EcoButton has self.animation = 0 in __init__
-# Make sure draw.rect calls DO NOT have border_radius if using Pygame 1.9.x
 class BinStats:
     def __init__(self):
         self.recycled_items = 0; self.landfill_items = 0; self.total_items = 0
@@ -203,18 +199,51 @@ class DetectionAnimation: # (logic unchanged, assuming border_radius removed fro
             p = self.particle_effects[i]; p["x"] += p["vx"]; p["y"] += p["vy"]; p["vy"] += 0.05; p["rotation"] += p["rot_speed"]; p["life"] -= 0.015
             if p["life"] <= 0:
                  if 0 <= i < len(self.particle_effects): self.particle_effects.pop(i)
-    def draw_particles(self, surface): # (logic unchanged)
+
+    def draw_particles(self, surface):
+        # <<< --- START OF CORRECTED BLOCK --- >>>
         for p in self.particle_effects:
             try:
-                life_ratio = max(0, p.get('life', 0) / 1.0); alpha = int(255 * min(1, life_ratio * 2))
+                life_ratio = max(0, p.get('life', 0) / 1.0)
+                alpha = int(255 * min(1, life_ratio * 2))
                 if alpha <= 0: continue
-                particle_type = p.get("type"); size = p.get("size", 0)
+
+                particle_type = p.get("type")
+                size = p.get("size", 0)
                 if size <= 0: continue
-                if particle_type == "leaf": part_surf = pygame.Surface((size * 3, size * 2), pygame.SRCALPHA); color = (*p.get("color", LEAF_GREEN)[:3], alpha); pygame.draw.ellipse(part_surf, color, (0, 0, size * 2, size * 1.5)); rotated_part = pygame.transform.rotate(part_surf, p.get("rotation", 0)); part_rect = rotated_part.get_rect(center=(int(p.get("x", 0)), int(p.get("y", 0)))); surface.blit(rotated_part, part_rect)
-                elif particle_type == "drop": part_surf = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA); color = (*p.get("color", WATER_BLUE)[:3], alpha); pygame.draw.circle(part_surf, color, (size, size), size); part_rect = part_surf.get_rect(center=(int(p.get("x", 0)), int(p.get("y", 0)))); surface.blit(part_surf, part_rect)
-                elif particle_type == "sparkle": color = (*p.get("color", SUNSET_ORANGE)[:3], alpha); center_x, center_y = int(p.get("x", 0)), int(p.get("y", 0)); num_lines = 5; rotation = p.get("rotation", 0)
-                for i in range(num_lines): angle = rotation + i * (360 / num_lines); rad = math.radians(angle); end_x = center_x + math.cos(rad) * size * 1.5; end_y = center_y + math.sin(rad) * size * 1.5; pygame.draw.line(surface, color, (center_x, center_y), (int(end_x), int(end_y)), 1)
-            except (pygame.error, KeyError, TypeError, ValueError) as e: print(f"Warning: Error drawing particle: {e}"); try: self.particle_effects.remove(p); except ValueError: pass
+
+                if particle_type == "leaf":
+                    part_surf = pygame.Surface((size * 3, size * 2), pygame.SRCALPHA)
+                    color = (*p.get("color", LEAF_GREEN)[:3], alpha)
+                    pygame.draw.ellipse(part_surf, color, (0, 0, size * 2, size * 1.5))
+                    rotated_part = pygame.transform.rotate(part_surf, p.get("rotation", 0))
+                    part_rect = rotated_part.get_rect(center=(int(p.get("x", 0)), int(p.get("y", 0))))
+                    surface.blit(rotated_part, part_rect)
+                elif particle_type == "drop":
+                    part_surf = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
+                    color = (*p.get("color", WATER_BLUE)[:3], alpha)
+                    pygame.draw.circle(part_surf, color, (int(size), int(size)), int(size)) # Use int for radius and center
+                    part_rect = part_surf.get_rect(center=(int(p.get("x", 0)), int(p.get("y", 0))))
+                    surface.blit(part_surf, part_rect)
+                elif particle_type == "sparkle":
+                    color = (*p.get("color", SUNSET_ORANGE)[:3], alpha)
+                    center_x, center_y = int(p.get("x", 0)), int(p.get("y", 0))
+                    num_lines = 5
+                    rotation = p.get("rotation", 0)
+                    for i in range(num_lines):
+                        angle = rotation + i * (360 / num_lines)
+                        rad = math.radians(angle)
+                        end_x = center_x + math.cos(rad) * size * 1.5
+                        end_y = center_y + math.sin(rad) * size * 1.5
+                        pygame.draw.line(surface, color, (center_x, center_y), (int(end_x), int(end_y)), 1)
+
+            except (pygame.error, KeyError, TypeError, ValueError, AttributeError) as e:
+                # Print a more informative warning, then skip this particle for this frame
+                print(f"Warning: Error drawing particle (type: {p.get('type', 'unknown')}, life: {p.get('life', '?')}, error: {e}). Skipping draw.")
+                # Let update_particles handle the actual removal based on life later
+                continue # Move to the next particle in the draw loop
+        # <<< --- END OF CORRECTED BLOCK --- >>>
+
     def draw(self, surface): # (logic unchanged, assuming border_radius removed if needed)
         if not self.item_image: return
         try:
@@ -351,34 +380,29 @@ def simulate_detection(queue): # (logic unchanged)
     items = [{"name": "Plastic Bottle", "type": "RECYCLING"}, {"name": "Apple Core", "type": "TRASH"}, {"name": "Aluminum Can", "type": "RECYCLING"}, {"name": "Paper Towel", "type": "TRASH"}, {"name": "Newspaper", "type": "RECYCLING"}, {"name": "Coffee Cup", "type": "TRASH"}, {"name": "Glass Jar", "type": "RECYCLING"}]
     chosen_item = random.choice(items); print(f"\n--- SIMULATING DETECTION: {chosen_item['name']} ({chosen_item['type']}) ---"); queue.put(chosen_item)
 
-
 # --- NEW: Server Thread Function ---
 def gui_server_thread(host, port, data_queue, running_flag_func):
     """Listens for connections and puts received data into the queue."""
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # Allow reusing the address shortly after closing (useful for restarts)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         server_socket.bind((host, port))
-        server_socket.listen(1) # Listen for one connection at a time
+        server_socket.listen(1)
         print(f"[Server Thread] Listening on {host}:{port}")
-        server_socket.settimeout(1.0) # Set timeout to allow checking running_flag
+        server_socket.settimeout(1.0) # Check running flag periodically
 
-        while running_flag_func(): # Check the global flag via function
+        while running_flag_func():
             try:
                 conn, addr = server_socket.accept()
                 with conn:
                     print(f"[Server Thread] Accepted connection from {addr}")
                     data = b""
                     while True: # Loop to receive potentially chunked data
-                        chunk = conn.recv(1024) # Receive up to 1024 bytes
-                        if not chunk:
-                            break # Connection closed by client
+                        chunk = conn.recv(1024)
+                        if not chunk: break
                         data += chunk
-                        # Basic check: If data seems like a complete JSON object, break
-                        # More robust: Use delimiters or length prefixing
-                        if data.strip().endswith(b'}'):
-                           break
+                        # Basic check for end of JSON - improve if needed
+                        if data.strip().endswith(b'}'): break
 
                     if data:
                         try:
@@ -391,43 +415,29 @@ def gui_server_thread(host, port, data_queue, running_flag_func):
                                 print("[Server Thread] Data added to queue.")
                             else:
                                 print("[Server Thread] Warning: Received data is not in expected format.")
-                        except json.JSONDecodeError as e:
-                            print(f"[Server Thread] Error decoding JSON: {e} - Data: {data.decode('utf-8', errors='ignore')}")
-                        except UnicodeDecodeError as e:
-                            print(f"[Server Thread] Error decoding UTF-8: {e} - Raw data: {data}")
-                        except Exception as e:
-                            print(f"[Server Thread] Error processing received data: {e}")
-                    else:
-                         print("[Server Thread] Received empty data or connection closed early.")
-
-            except socket.timeout:
-                continue # Timeout is expected, just loop again to check running_flag
-            except Exception as e:
-                print(f"[Server Thread] Error accepting connection: {e}")
-                time.sleep(1) # Wait a bit before retrying after an error
-
-    except Exception as e:
-        print(f"[Server Thread] Error binding or listening: {e}")
-    finally:
-        print("[Server Thread] Shutting down...")
-        server_socket.close()
+                        except json.JSONDecodeError as e: print(f"[Server Thread] Error decoding JSON: {e} - Data: {data.decode('utf-8', errors='ignore')}")
+                        except UnicodeDecodeError as e: print(f"[Server Thread] Error decoding UTF-8: {e} - Raw data: {data}")
+                        except Exception as e: print(f"[Server Thread] Error processing received data: {e}")
+                    else: print("[Server Thread] Received empty data or connection closed early.")
+            except socket.timeout: continue # Normal, check running_flag again
+            except Exception as e: print(f"[Server Thread] Error accepting connection: {e}"); time.sleep(1)
+    except Exception as e: print(f"[Server Thread] Error binding or listening: {e}")
+    finally: print("[Server Thread] Shutting down..."); server_socket.close()
 
 # --- Main Function ---
 def main():
-    global server_running # Allow modifying the global flag
+    global server_running
+    server_thread = None # Initialize server_thread variable
     try:
         interface = SmartBinInterface()
         clock = pygame.time.Clock()
         running = True
 
-        # --- Start the GUI Server Thread ---
-        # Pass the server_running flag check as a function (lambda)
         server_thread = threading.Thread(target=gui_server_thread,
                                          args=(GUI_SERVER_HOST, GUI_SERVER_PORT, detection_queue, lambda: server_running),
-                                         daemon=True) # Daemon allows exit even if thread active
+                                         daemon=True)
         server_thread.start()
         print("GUI Server thread started.")
-        # -----------------------------------
 
         print("GUI Initialized. Waiting for detection data...")
         print("Press 'D' to simulate a detection event.")
@@ -436,13 +446,9 @@ def main():
         while running:
             mouse_pos = pygame.mouse.get_pos()
             for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False # Signal main loop to exit
-                    server_running = False # Signal server thread to exit
+                if event.type == pygame.QUIT: running = False; server_running = False
                 elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        running = False
-                        server_running = False
+                    if event.key == pygame.K_ESCAPE: running = False; server_running = False
                     if event.key == pygame.K_d:
                          if interface.state == "idle": simulate_detection(detection_queue)
                          else: print("Simulation ignored: Detection already in progress.")
@@ -457,7 +463,7 @@ def main():
             interface.update_nature_elements()
             interface.update_progress_bars()
             interface.update_hint()
-            interface.update_detection() # Checks queue populated by server thread
+            interface.update_detection()
 
             try:
                 draw_background(screen)
@@ -473,6 +479,10 @@ def main():
                     interface.draw_detection(screen)
             except Exception as draw_err:
                 print(f"Critical error during drawing: {draw_err}")
+                # Add more detail to the error message if possible
+                import traceback
+                traceback.print_exc() # Print full traceback for drawing errors
+
                 screen.fill(CREAM)
                 try:
                     err_font = pygame.font.SysFont("Arial", 20)
@@ -485,11 +495,13 @@ def main():
 
     except Exception as main_err:
         print(f"Critical error in main loop: {main_err}")
+        import traceback
+        traceback.print_exc() # Print traceback for main loop errors too
     finally:
         print("Shutting down Pygame and Server...")
-        server_running = False # Ensure server thread knows to stop
-        if 'server_thread' in locals() and server_thread.is_alive():
-             server_thread.join(timeout=1.0) # Wait briefly for server thread
+        server_running = False
+        if server_thread and server_thread.is_alive():
+             server_thread.join(timeout=1.0)
         pygame.quit()
         print("Application terminated.")
         sys.exit()
