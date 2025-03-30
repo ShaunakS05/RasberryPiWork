@@ -19,7 +19,7 @@ except Exception as e:
     print("Proceeding without OpenAI analysis capability.")
     client = None # Ensure client is None if init fails
 
-analysis_delay = 1.5  # Seconds the change must persist
+analysis_delay = 1  # Seconds the change must persist
 process_every_n_frames = 3 # How often to check for change
 cooldown_period = 5 # Seconds after analysis before next trigger possible
 min_contour_area = 500 # <<< ADJUST: Minimum pixel area for change detection
