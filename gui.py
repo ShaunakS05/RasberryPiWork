@@ -30,7 +30,7 @@ except pygame.error as e:
     print(f"Warning: Could not set fullscreen mode ({e}). Trying windowed mode.")
     screen = pygame.display.set_mode((actual_screen_width, actual_screen_height)) # Fallback
 
-pygame.display.set_caption("SmartBin™ Waste Management System")
+pygame.display.set_caption("Consolimate™ Waste Management System")
 
 # --- Update Global Dimensions USED BY GUI ELEMENTS ---
 SCREEN_WIDTH = actual_screen_width
@@ -82,7 +82,7 @@ class NatureElement: # (Unchanged)
     def __init__(self): self.reset(); self.y = random.randint(0, SCREEN_HEIGHT)
     def reset(self):
         self.x = random.randint(0, SCREEN_WIDTH); self.y = -10; self.type = random.choice(["leaf", "drop"])
-        self.size = random.randint(3, 8) if self.type == "leaf" else random.randint(2, 5); self.speed = random.uniform(0.3, 1.0); self.drift = random.uniform(-0.3, 0.3); self.rotation = random.randint(0, 360); self.rot_speed = random.uniform(-1, 1)
+        self.size = random.randint(18, 20) if self.type == "leaf" else random.randint(20, 25); self.speed = random.uniform(0.3, 1.0); self.drift = random.uniform(-0.3, 0.3); self.rotation = random.randint(0, 360); self.rot_speed = random.uniform(-1, 1)
         if self.type == "leaf":
             green_variation = random.randint(-20, 20); base_color = LEAF_GREEN; r = max(0, min(255, base_color[0] + green_variation)); g = max(0, min(255, base_color[1] + green_variation)); b = max(0, min(255, base_color[2] - green_variation)); self.color = (r, g, b)
         else: self.color = WATER_BLUE
@@ -267,6 +267,10 @@ class SmartBinInterface:
         self.nature_elements = [NatureElement() for _ in range(15)]
         self.state = "idle"
         self.detection_animation = None
+        
+        # Add these two new variables to track fill levels separately
+        self.recycling_fill_level = 0  # Current fill level (0-100%)
+        self.landfill_fill_level = 0   # Current fill level (0-100%)
 
         # --- Calculate sizes based on fullscreen dimensions ---
         # Progress bar dimensions
@@ -463,37 +467,49 @@ class SmartBinInterface:
             print(f"GUI: Received detection - Item: {item_name}, Type: {item_type}"); self.detection_animation = DetectionAnimation(item_name, item_type); self.state = "detecting"
         elif not isinstance(detection_data, dict): print(f"Warning: Received invalid detection data format: {type(detection_data)}")
 
-    def update_detection(self): # (Unchanged)
+    # In SmartBinInterface.update_detection method, replace the progress bar update section:
+    def update_detection(self):
         try:
             if self.state == "idle":
-                 if not detection_queue.empty(): detection_data = detection_queue.get(); self.process_camera_detection(detection_data); detection_queue.task_done()
+                if not detection_queue.empty(): detection_data = detection_queue.get(); self.process_camera_detection(detection_data); detection_queue.task_done()
             if self.detection_animation:
+                print( self.detection_animation.item_type.upper())
+                if self.detection_animation.item_type.upper() == "RECYCLING":
+                    print(self.recycling_fill_level)
+                    self.recycling_fill_level = (self.recycling_fill_level + 25)  # Ensure we don't exceed 100%
+                elif self.detection_animation.item_type.upper() == "TRASH":
+                    print(self.landfill_fill_level)
+                    self.landfill_fill_level = self.landfill_fill_level + 25  # Ensure we don't exceed 100%
+                    
+                self.landfill_progress.set_value(self.landfill_fill_level)
                 animation_finished = self.detection_animation.update()
                 # Update stats and progress bars when feedback phase starts
                 if self.detection_animation.phase == "feedback" and not self.detection_animation.stats_updated:
-                    self.stats.update_stats(self.detection_animation.item_type); print(f"GUI: Stats updated for {self.detection_animation.item_name}")
-                    # Set progress bar values based on updated stats
-                    if self.stats.total_items > 0:
-                        recycling_percentage = self.stats.get_recycling_percentage()
-                        self.recycling_progress.set_value(recycling_percentage) # Update recycling bar
-                        self.landfill_progress.set_value(100 - recycling_percentage) # Update landfill bar
-                        print(f"GUI: Progress bars updated - Rec: {recycling_percentage:.1f}%, Land: {100-recycling_percentage:.1f}%")
-                    else: # Reset if total is zero (e.g., after incorrect feedback potentially resets stats?)
-                        self.recycling_progress.set_value(0)
-                        self.landfill_progress.set_value(0)
-                    self.detection_animation.stats_updated = True # Mark as updated for this animation instance
+                    self.stats.update_stats(self.detection_animation.item_type)
+                    print(f"GUI: Stats updated for {self.detection_animation.item_name}")
+                    
+                    # NEW CODE: Increment fill level by 25% based on item type
+                    
+                    # Update progress bars based on the new fill levels
+                    self.recycling_progress.set_value(self.landfill_fill_level)
+                    self.landfill_progress.set_value(self.landfill_fill_level)
+                    
+                    print(f"GUI: Progress bars updated - Rec: {self.recycling_fill_level}%, Land: {self.landfill_fill_level}%")
+                    self.detection_animation.stats_updated = True
+                    
                 # Check if the entire animation sequence is finished
                 if animation_finished:
                     print("GUI: Detection animation finished.")
-                    self.detection_animation = None # Clear the animation object
-                    self.state = "idle" # Return to idle state
+                    self.detection_animation = None
+                    self.state = "idle"
         except queue.Empty:
-            pass # It's normal for the queue to be empty
+            pass
         except Exception as e:
             print(f"Error in update_detection: {e}")
-            # Reset state in case of error during animation update
             self.detection_animation = None
             self.state = "idle"
+
+
 
     def draw_detection(self, surface): # (Unchanged)
         try:
@@ -550,7 +566,7 @@ def draw_header(surface):
         header_rect = pygame.Rect(0, 0, SCREEN_WIDTH, header_height); pygame.draw.rect(surface, CREAM, header_rect)
         for y in range(0, header_height, 3): grain_width = random.randint(int(SCREEN_WIDTH * 0.8), SCREEN_WIDTH); grain_x = random.randint(0, int(SCREEN_WIDTH * 0.2)); grain_alpha = random.randint(8, 18); grain_line = pygame.Surface((grain_width, 1), pygame.SRCALPHA); grain_line.fill((*SOFT_BROWN[:3], grain_alpha)); surface.blit(grain_line, (grain_x, y))
         pygame.draw.rect(surface, WOOD_BROWN, (0, header_height - 2, SCREEN_WIDTH, 2))
-        title_text = font_title.render("SmartBin™ Waste Management", True, TEXT_BROWN); title_rect = title_text.get_rect(center=(SCREEN_WIDTH//2, header_height//2)); surface.blit(title_text, title_rect); leaf_size = int(header_height * 0.3); leaf_surf = pygame.Surface((leaf_size * 1.5, leaf_size), pygame.SRCALPHA); pygame.draw.ellipse(leaf_surf, LEAF_GREEN, (0, 0, leaf_size * 1.5, leaf_size)); pygame.draw.line(leaf_surf, DARK_GREEN, (leaf_size * 0.5, leaf_size / 2), (leaf_size * 1.5, leaf_size / 2), 2); leaf_left_rect = leaf_surf.get_rect(center=(title_rect.left - int(SCREEN_WIDTH*0.05), title_rect.centery)); surface.blit(leaf_surf, leaf_left_rect); leaf_right_surf = pygame.transform.flip(leaf_surf, True, False); leaf_right_rect = leaf_right_surf.get_rect(center=(title_rect.right + int(SCREEN_WIDTH*0.05), title_rect.centery)); surface.blit(leaf_right_surf, leaf_right_rect)
+        title_text = font_title.render("Consolimate™ Waste Management", True, TEXT_BROWN); title_rect = title_text.get_rect(center=(SCREEN_WIDTH//2, header_height//2)); surface.blit(title_text, title_rect); leaf_size = int(header_height * 0.3); leaf_surf = pygame.Surface((leaf_size * 1.5, leaf_size), pygame.SRCALPHA); pygame.draw.ellipse(leaf_surf, LEAF_GREEN, (0, 0, leaf_size * 1.5, leaf_size)); pygame.draw.line(leaf_surf, DARK_GREEN, (leaf_size * 0.5, leaf_size / 2), (leaf_size * 1.5, leaf_size / 2), 2); leaf_left_rect = leaf_surf.get_rect(center=(title_rect.left - int(SCREEN_WIDTH*0.05), title_rect.centery)); surface.blit(leaf_surf, leaf_left_rect); leaf_right_surf = pygame.transform.flip(leaf_surf, True, False); leaf_right_rect = leaf_right_surf.get_rect(center=(title_rect.right + int(SCREEN_WIDTH*0.05), title_rect.centery)); surface.blit(leaf_right_surf, leaf_right_rect)
     except pygame.error as e: print(f"Warning: Error drawing header: {e}"); pygame.draw.rect(surface, CREAM, (0, 0, SCREEN_WIDTH, 65)); pygame.draw.line(surface, WOOD_BROWN, (0, 63), (SCREEN_WIDTH, 63), 2)
 
 def simulate_detection(queue): # (Unchanged)
