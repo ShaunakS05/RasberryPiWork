@@ -23,7 +23,7 @@ except Exception as e:
 
 analysis_delay = 0.5  # Seconds the change must persist
 process_every_n_frames = 3 # How often to check for change
-cooldown_period = 5 # Seconds after analysis before next trigger possible
+cooldown_period = 1 # Seconds after analysis before next trigger possible
 min_contour_area = 500 # <<< ADJUST: Minimum pixel area for change detection
 
 # --- Arduino Configuration ---
