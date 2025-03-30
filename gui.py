@@ -476,10 +476,10 @@ class SmartBinInterface:
                 print( self.detection_animation.item_type.upper())
                 if self.detection_animation.item_type.upper() == "RECYCLING":
                     print(self.recycling_fill_level)
-                    self.recycling_fill_level = (self.recycling_fill_level + 25)  # Ensure we don't exceed 100%
+                    self.recycling_fill_level = (self.recycling_fill_level + 1)  # Ensure we don't exceed 100%
                 elif self.detection_animation.item_type.upper() == "TRASH":
                     print(self.landfill_fill_level)
-                    self.landfill_fill_level = self.landfill_fill_level + 25  # Ensure we don't exceed 100%
+                    self.landfill_fill_level = self.landfill_fill_level + 1  # Ensure we don't exceed 100%
                     
                 self.landfill_progress.set_value(self.landfill_fill_level)
                 animation_finished = self.detection_animation.update()
