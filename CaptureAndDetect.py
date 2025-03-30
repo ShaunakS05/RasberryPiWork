@@ -46,11 +46,21 @@ def encode_image(image_path):
 
 # Function to call the OpenAI API (Unchanged, relies on prompt for filtering)
 def ask_chatgpt(image_path):
+    global client
+    if not client:
+        print("OpenAI client not available. Skipping analysis.")
+        return None
+
     print(f"→ Analyzing image based on detected change: {image_path}")
     try:
-        imageDecoded = encode_image(image_path)
+        base64_image = encode_image(image_path)
+        if not base64_image:
+            return None # Error during encoding
+
         response = client.chat.completions.create(
+            # --- FIX: Update the model name here ---
             model="gpt-4-turbo",
+            # ---------------------------------------
             messages=[
                 {
                     "role": "user",
@@ -58,7 +68,6 @@ def ask_chatgpt(image_path):
                         {
                             "type": "text",
                             "text": (
-                                # Prompt relies on GPT-4V to ignore hands, people, etc.
                                 "You are a trashcan vision assistant.\n"
                                 "Look at this image, which was captured because motion or change was detected.\n"
                                 "Determine if the primary changing object is a common piece of trash or recycling.\n"
@@ -85,7 +94,7 @@ def ask_chatgpt(image_path):
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/jpeg;base64, {imageDecoded}"
+                                "url": f"data:image/jpeg;base64,{base64_image}"
                             }
                         }
                     ]
@@ -94,42 +103,56 @@ def ask_chatgpt(image_path):
             max_tokens=100,
         )
         response_text = response.choices[0].message.content.strip()
-        # --- (Keep response parsing logic) ---
-        print("--- GPT-4V Raw Response ---")
+        print("--- GPT-4 Turbo Raw Response ---") # Updated print message
         print(response_text)
         print("--------------------------")
+
         lines = response_text.splitlines()
         classification, is_smelly, smell_rating, volume_guess, item_name = "UNKNOWN", "UNKNOWN", -1, -1.0, "UNKNOWN"
+
         for line in lines:
-            line_lower = line.lower()
-            if line_lower.startswith("classification:"): classification = line.split(":", 1)[1].strip().upper()
-            elif line_lower.startswith("smelly:"): is_smelly = line.split(":", 1)[1].strip().upper()
-            elif line_lower.startswith("smell rating:"):
-                try: smell_rating = int(line.split(":", 1)[1].strip())
-                except ValueError: smell_rating = -1
-            elif line_lower.startswith("volume estimation:"):
-                try:
-                    volume_str = line.split(":", 1)[1].strip().split()[0]
-                    volume_guess = float(volume_str.replace(',', ''))
-                except (ValueError, IndexError): volume_guess = -1.0
-            elif line_lower.startswith("item name:"): item_name = line.split(":", 1)[1].strip().upper()
+            try:
+                key, value = line.split(":", 1)
+                key = key.strip().lower()
+                value = value.strip()
+
+                if key == "classification": classification = value.upper()
+                elif key == "smelly": is_smelly = value.upper()
+                elif key == "smell rating":
+                    try: smell_rating = int(value)
+                    except ValueError: smell_rating = -1
+                elif key == "volume estimation":
+                    try:
+                        volume_str = value.split()[0].replace(',', '') # Handle commas
+                        volume_guess = float(volume_str)
+                    except (ValueError, IndexError): volume_guess = -1.0
+                elif key == "item name": item_name = value.upper()
+            except ValueError:
+                print(f"Warning: Could not parse line in GPT response: '{line}'")
+
 
         if classification == "IGNORE":
-            print("→ GPT-4V determined the object/change should be ignored.")
+            print("→ GPT-4 Turbo determined the object/change should be ignored.")
             return None
+
+        # Validate classification before returning
+        if classification not in ["RECYCLING", "TRASH"]:
+             print(f"Warning: Received unexpected classification '{classification}'. Treating as UNKNOWN.")
+             # Decide how to handle - return None or maybe default to TRASH? Let's return None for now.
+             return None
+
+
         print("→ Final Classification:", classification)
         print("→ Smelly object?", is_smelly)
         print("→ Smell rating:", smell_rating)
         print("→ Estimated volume (cm^3):", volume_guess)
         print("→ Item:", item_name)
-        # --- (Keep smell commentary logic) ---
-        if smell_rating >= 7: print("Trash contains object that is very smelly")
-        elif smell_rating >= 4: print("Trash contains object that is somewhat smelly")
-        elif smell_rating >= 0 and is_smelly == "NO": print("Trash is fine for now (object not smelly)")
-        elif smell_rating >= 0: print("Trash is fine for now")
-        else: print("Smell rating could not be determined")
+
         return classification, is_smelly, smell_rating, volume_guess, item_name
+
     except Exception as e:
+        # Catch potential API errors specifically if possible
+        # Example: from openai import APIError, RateLimitError etc.
         print(f"An error occurred during OpenAI request or processing: {e}")
         return None
 
