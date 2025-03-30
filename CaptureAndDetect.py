@@ -3,69 +3,45 @@ import cv2
 import base64
 import os
 from dotenv import load_dotenv
+import threading
 
 load_dotenv()
 
-client = OpenAI(api_key = os.getenv("OPENAI_API_KEY"))
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-#Function to convert image to base64
-def live_feed_and_capture(image_path="item.jpg"):
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Cannot open camera")
-        return
+# Global variable to hold the current frame
+current_frame = None
 
-    print("Live feed started — press 'c' to capture, 'q' to quit")
+# Function to capture and save the current frame, then process it with ask_chatgpt
+def process_capture(image_path="item.jpg"):
+    global current_frame
+    if current_frame is not None:
+        cv2.imwrite(image_path, current_frame)
+        print(f"Image captured and saved to {image_path}")
+        classification, is_smelly, smell_rating, volume_guess, item_name = ask_chatgpt(image_path)
+        print("→ Final classification:", classification)
+    else:
+        print("No frame available to capture.")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Failed to grab frame")
-            break
-
-        cv2.imshow("Live Feed", frame)
-
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('c'):
-            cv2.imwrite(image_path, frame)
-            print(f"Image captured and saved to {image_path}")
-            classification, is_smelly, smell_rating, volume_guess, item_name = ask_chatgpt(image_path)
-            print("→ Final classification:", classification)
-        elif key == ord('q'):
-            print("Exiting live feed")
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-#Function to convert image to base64
-def capture_image(path = "item.jpg"):
-    cap = cv2.VideoCapture(0)
-    print("Capturing image Nathan")
-    ret, frame = cap.read()
-    if ret:
-        cv2.imwrite(path,frame)
-        print(f"Image saved to {path}")
-    cap.release()
-
-#Function to convert image to base 64 because apis don't take binary code (jpg)
+# Function to convert image file to base64
 def encode_image(image_path):
     with open(image_path, "rb") as f:
-        return base64.b64encode(f.read()).decode('utf-8')
+        return base64.b64encode(f.read()).decode("utf-8")
 
-#classifyimage method
+# Function to call the OpenAI API and classify the captured image
 def ask_chatgpt(image_path):
-    imageDecoded= encode_image(image_path)
+    imageDecoded = encode_image(image_path)
     
     response = client.chat.completions.create(
-        model = "gpt-4-turbo",
+        model="gpt-4-turbo",
         messages=[
             {
                 "role": "user",
                 "content": [
                     {
                         "type": "text",
-                        "text": "You are a trashcan vision assistant.\n"
+                        "text": (
+                            "You are a trashcan vision assistant.\n"
                             "Look at this object and:\n"
                             "1. Classify it as RECYCLING or TRASH.\n"
                             "2. Determine if it is smelly. Respond with YES or NO.\n"
@@ -74,21 +50,22 @@ def ask_chatgpt(image_path):
                             "Classification: <RECYCLING or TRASH>\n"
                             "Smelly: <YES or NO>\n"
                             "Smell Rating: <1 to 10>\n"
-                            "4. Estimate the volume of the obect in cm cubed by identifying the object and finding the average volume of that kind of object. Respond with <x cm^3>\n"
+                            "4. Estimate the volume of the object in cm cubed by identifying the object and finding the average volume of that kind of object. Respond with <x cm^3>\n"
                             "5. Determine what the item is. This value should return a string in all caps."
-
+                        )
                     },
                     {
                         "type": "image_url",
-                        "image_url":{
+                        "image_url": {
                             "url": f"data:image/jpeg;base64, {imageDecoded}"
                         }
                     }
                 ]
             }
         ],
-        max_tokens = 50,
+        max_tokens=50,
     )
+    
     response_text = response.choices[0].message.content.strip()
     lines = response_text.splitlines()
 
@@ -119,7 +96,6 @@ def ask_chatgpt(image_path):
     except:
         item_name = "UNKNOWN"
 
-
     print("→ Sort to:", classification)
     print("→ Smelly object?", is_smelly)
     print("→ Smell rating:", smell_rating)
@@ -137,9 +113,41 @@ def ask_chatgpt(image_path):
 
     return classification, is_smelly, smell_rating, volume_guess, item_name
 
+# Function to display a live feed and capture images when 'c' is pressed
+def live_feed_and_capture(image_path="item.jpg"):
+    global current_frame
+    # Open the camera with V4L2 backend
+    cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+    
+    # Set a lower resolution for improved performance
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    
+    if not cap.isOpened():
+        print("Cannot open camera")
+        return
+
+    print("Live feed started — press 'c' to capture, 'q' to quit")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to grab frame")
+            break
+
+        current_frame = frame.copy()  # Update the global frame
+        cv2.imshow("Live Feed", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('c'):
+            # Process capture in a separate thread to keep the feed live
+            threading.Thread(target=process_capture, args=(image_path,)).start()
+        elif key == ord('q'):
+            print("Exiting live feed")
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
 if __name__ == "__main__":
-    image_path = "item.jpg"
-    capture_image(image_path)
-    classification, is_smelly, smell_rating, volume_guess, item_name = ask_chatgpt(image_path)
-    print("→ Final classification:", classification)
     live_feed_and_capture("item.jpg")
